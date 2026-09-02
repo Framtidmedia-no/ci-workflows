@@ -1,0 +1,189 @@
+# Felles lint-port for Framtidmedia-no, Gange-Rolv-AS og frlund3.
+#
+# To porter, ingen per-repo-konfig:
+#   1. ENDREDE FILER: ESLint på filene PR-en rører. Feil der blokkerer merge —
+#      ny kode er alltid ren, og etterslepet ryddes der man jobber.
+#   2. TERSKEL MOT BASE: totalt antall ESLint-feil på PR-en må ikke være høyere
+#      enn på base-branchen. Terskelen er dermed alltid «dagens nivå» og
+#      ratchet-er seg ned av seg selv — ingen tall å vedlikeholde.
+#
+# Repoet kaller den med:
+#   jobs:
+#     lint-port:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/lint-gate.yml@main
+#
+# Pakkebehandler oppdages fra lockfila. Repoer uten eslint i node_modules
+# hopper over begge portene med en notice i stedet for å feile.
+name: Lint-port
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node-versjon (brukes bare hvis repoet ikke har .nvmrc/.node-version)
+        type: string
+        default: '24'
+      pnpm-version:
+        description: pnpm-versjon hvis package.json mangler packageManager-feltet
+        type: string
+        default: '11'
+      eslint-args:
+        description: Argumenter til ESLint for hele-repoet-tellingen
+        type: string
+        default: '.'
+      typecheck:
+        description: Kjør også tsc --noEmit (for repoer uten egen CI)
+        type: boolean
+        default: false
+      typecheck-command:
+        description: Overstyr typecheck-kommandoen (default `<pm> exec tsc --noEmit`)
+        type: string
+        default: ''
+
+jobs:
+  lint-port:
+    name: Lint-port (endrede filer + terskel mot base)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Oppdag pakkebehandler
+        id: pm
+        shell: bash
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+            echo "run=pnpm exec" >> "$GITHUB_OUTPUT"
+            echo "install=pnpm install --frozen-lockfile" >> "$GITHUB_OUTPUT"
+          elif [ -f yarn.lock ]; then
+            echo "pm=yarn" >> "$GITHUB_OUTPUT"
+            echo "run=yarn" >> "$GITHUB_OUTPUT"
+            echo "install=yarn install --frozen-lockfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "pm=npm" >> "$GITHUB_OUTPUT"
+            echo "run=npx --no-install" >> "$GITHUB_OUTPUT"
+            echo "install=npm ci" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f .nvmrc ]; then echo "node-file=.nvmrc" >> "$GITHUB_OUTPUT"
+          elif [ -f .node-version ]; then echo "node-file=.node-version" >> "$GITHUB_OUTPUT"
+          else echo "node-file=" >> "$GITHUB_OUTPUT"; fi
+          if grep -q '"packageManager"' package.json; then echo "pnpm-version=" >> "$GITHUB_OUTPUT"
+          else echo "pnpm-version=${{ inputs.pnpm-version }}" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Sett opp pnpm
+        if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ steps.pm.outputs.pnpm-version }}
+
+      - name: Sett opp Node (versjonsfil)
+        if: steps.pm.outputs.node-file != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ${{ steps.pm.outputs.node-file }}
+          cache: ${{ steps.pm.outputs.pm }}
+
+      - name: Sett opp Node (input)
+        if: steps.pm.outputs.node-file == ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ steps.pm.outputs.pm }}
+
+      - name: Installer avhengigheter
+        shell: bash
+        run: ${{ steps.pm.outputs.install }}
+
+      - name: Finnes ESLint?
+        id: eslint
+        shell: bash
+        run: |
+          if [ -x node_modules/.bin/eslint ]; then
+            echo "finnes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "finnes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ESLint er ikke installert i dette repoet — lint-porten hopper over."
+          fi
+
+      - name: "Port 1: ESLint på endrede filer"
+        if: steps.eslint.outputs.finnes == 'true'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -o pipefail
+          mapfile -t FILER < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+          if [ "${#FILER[@]}" -eq 0 ]; then
+            echo "Ingen endrede JS/TS-filer i PR-en."
+            exit 0
+          fi
+          echo "Linter ${#FILER[@]} endrede fil(er):"
+          printf '  %s\n' "${FILER[@]}"
+          ${{ steps.pm.outputs.run }} eslint --no-warn-ignored "${FILER[@]}"
+
+      - name: "Port 2: terskel mot base (feil må ikke øke)"
+        if: steps.eslint.outputs.finnes == 'true'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUN: ${{ steps.pm.outputs.run }}
+          INSTALL: ${{ steps.pm.outputs.install }}
+          ESLINT_ARGS: ${{ inputs.eslint-args }}
+        run: |
+          tell() {  # skriver antall errors til stdout, eller "ukjent" hvis eslint ikke kunne kjøre
+            local ut="$1"
+            rm -f "$ut"
+            $RUN eslint $ESLINT_ARGS -f json -o "$ut" >/dev/null 2>&1 || true
+            if [ -s "$ut" ]; then
+              node -e "const r=require(process.argv[1]);console.log(r.reduce((a,f)=>a+f.errorCount,0))" "$ut"
+            else
+              echo ukjent
+            fi
+          }
+          HODE=$(tell /tmp/eslint-hode.json)
+          if [ "$HODE" = "ukjent" ]; then
+            echo "::error::ESLint kunne ikke kjøre på PR-en (krasj eller ugyldig config). Kjør '$RUN eslint $ESLINT_ARGS' lokalt."
+            $RUN eslint $ESLINT_ARGS 2>&1 | tail -40 || true
+            exit 1
+          fi
+
+          git worktree add --detach /tmp/base "$BASE_SHA" >/dev/null 2>&1
+          pushd /tmp/base >/dev/null
+          if $INSTALL >/dev/null 2>&1; then
+            BASE=$(tell /tmp/eslint-base.json)
+          else
+            BASE=ukjent
+          fi
+          popd >/dev/null
+
+          echo "Lint-errors: PR=$HODE  base=$BASE"
+          if [ "$BASE" = "ukjent" ]; then
+            echo "::notice::Kunne ikke måle lint på base-branchen — porten gater kun på at PR-en linter."
+            exit 0
+          fi
+          if [ "$HODE" -gt "$BASE" ]; then
+            echo "::error::Lint-errors økte fra $BASE (base) til $HODE (PR). Nye feil må fikses før merge."
+            node -e "
+              const b=require('/tmp/eslint-base.json'), h=require('/tmp/eslint-hode.json');
+              const per=r=>Object.fromEntries(r.map(f=>[f.filePath.replace(process.cwd()+'/',''),f.errorCount]));
+              const pb=per(b), ph=per(h);
+              for (const [f,n] of Object.entries(ph)) if (n>(pb[f]||0)) console.log('  +'+(n-(pb[f]||0))+'  '+f);
+            "
+            exit 1
+          fi
+          if [ "$HODE" -lt "$BASE" ]; then
+            echo "::notice::Lint-errors gikk ned fra $BASE til $HODE. Takk!"
+          fi
+
+      - name: Typecheck
+        if: inputs.typecheck
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.typecheck-command }}" ]; then
+            ${{ inputs.typecheck-command }}
+          else
+            ${{ steps.pm.outputs.run }} tsc --noEmit
+          fi
