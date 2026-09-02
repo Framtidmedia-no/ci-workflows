@@ -12,6 +12,11 @@
 #     lint-port:
 #       uses: Framtidmedia-no/ci-workflows/.github/workflows/lint-gate.yml@main
 #
+# Monorepo med ESLint per app: én jobb per app via `working-directory`
+# (gjerne som matrix). Install skjer alltid på repo-roten der lockfila
+# ligger; ESLint og typecheck kjører fra katalogen, og Port 1 teller bare
+# endrede filer under den.
+#
 # Pakkebehandler oppdages fra lockfila. Repoer uten eslint i node_modules
 # hopper over begge portene med en notice i stedet for å feile.
 name: Lint-port
@@ -39,12 +44,18 @@ on:
         description: Overstyr typecheck-kommandoen (default `<pm> exec tsc --noEmit`)
         type: string
         default: ''
+      working-directory:
+        description: Katalog ESLint og typecheck kjører fra (monorepo-app). Install skjer alltid på repo-roten.
+        type: string
+        default: '.'
 
 jobs:
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      WD: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -101,32 +112,37 @@ jobs:
         id: eslint
         shell: bash
         run: |
-          if [ -x node_modules/.bin/eslint ]; then
+          # Roten (vanlig repo, npm-workspaces hoister dit) eller katalogen
+          # selv (pnpm-workspace legger binæren i appens node_modules).
+          if [ -x node_modules/.bin/eslint ] || [ -x "$WD/node_modules/.bin/eslint" ]; then
             echo "finnes=true" >> "$GITHUB_OUTPUT"
           else
             echo "finnes=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ESLint er ikke installert i dette repoet — lint-porten hopper over."
+            echo "::notice::ESLint er ikke installert i $WD — lint-porten hopper over."
           fi
 
       - name: "Port 1: ESLint på endrede filer"
         if: steps.eslint.outputs.finnes == 'true'
         shell: bash
+        working-directory: ${{ inputs.working-directory }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -o pipefail
-          mapfile -t FILER < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+          # --relative: bare filer under working-directory, med sti relativt til den.
+          mapfile -t FILER < <(git diff --name-only --relative --diff-filter=ACMR "$BASE_SHA"...HEAD -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
           if [ "${#FILER[@]}" -eq 0 ]; then
-            echo "Ingen endrede JS/TS-filer i PR-en."
+            echo "Ingen endrede JS/TS-filer i PR-en (under $WD)."
             exit 0
           fi
-          echo "Linter ${#FILER[@]} endrede fil(er):"
+          echo "Linter ${#FILER[@]} endrede fil(er) i $WD:"
           printf '  %s\n' "${FILER[@]}"
           ${{ steps.pm.outputs.run }} eslint --no-warn-ignored "${FILER[@]}"
 
       - name: "Port 2: terskel mot base (feil må ikke øke)"
         if: steps.eslint.outputs.finnes == 'true'
         shell: bash
+        working-directory: ${{ inputs.working-directory }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RUN: ${{ steps.pm.outputs.run }}
@@ -143,18 +159,23 @@ jobs:
               echo ukjent
             fi
           }
+          HODE_ROT=$(pwd)
           HODE=$(tell /tmp/eslint-hode.json)
           if [ "$HODE" = "ukjent" ]; then
-            echo "::error::ESLint kunne ikke kjøre på PR-en (krasj eller ugyldig config). Kjør '$RUN eslint $ESLINT_ARGS' lokalt."
+            echo "::error::ESLint kunne ikke kjøre på PR-en (krasj eller ugyldig config). Kjør '$RUN eslint $ESLINT_ARGS' lokalt i $WD."
             $RUN eslint $ESLINT_ARGS 2>&1 | tail -40 || true
             exit 1
           fi
 
+          # Base lintes i et worktree: install på roten der lockfila ligger,
+          # ESLint fra samme underkatalog som PR-en.
           git worktree add --detach /tmp/base "$BASE_SHA" >/dev/null 2>&1
           pushd /tmp/base >/dev/null
-          if $INSTALL >/dev/null 2>&1; then
+          if $INSTALL >/dev/null 2>&1 && cd "$WD"; then
+            BASE_ROT=$(pwd)
             BASE=$(tell /tmp/eslint-base.json)
           else
+            BASE_ROT=/tmp/base
             BASE=ukjent
           fi
           popd >/dev/null
@@ -166,10 +187,10 @@ jobs:
           fi
           if [ "$HODE" -gt "$BASE" ]; then
             echo "::error::Lint-errors økte fra $BASE (base) til $HODE (PR). Nye feil må fikses før merge."
-            node -e "
+            HODE_ROT="$HODE_ROT" BASE_ROT="$BASE_ROT" node -e "
               const b=require('/tmp/eslint-base.json'), h=require('/tmp/eslint-hode.json');
-              const per=r=>Object.fromEntries(r.map(f=>[f.filePath.replace(process.cwd()+'/',''),f.errorCount]));
-              const pb=per(b), ph=per(h);
+              const per=(r,rot)=>Object.fromEntries(r.map(f=>[f.filePath.replace(rot+'/',''),f.errorCount]));
+              const pb=per(b,process.env.BASE_ROT), ph=per(h,process.env.HODE_ROT);
               for (const [f,n] of Object.entries(ph)) if (n>(pb[f]||0)) console.log('  +'+(n-(pb[f]||0))+'  '+f);
             "
             exit 1
@@ -181,6 +202,7 @@ jobs:
       - name: Typecheck
         if: inputs.typecheck
         shell: bash
+        working-directory: ${{ inputs.working-directory }}
         run: |
           if [ -n "${{ inputs.typecheck-command }}" ]; then
             ${{ inputs.typecheck-command }}
