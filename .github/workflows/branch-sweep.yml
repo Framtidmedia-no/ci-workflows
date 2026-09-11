@@ -1,0 +1,163 @@
+# Ukentlig branch-sveip for Framtidmedia-no, Gange-Rolv-AS og frlund3.
+#
+# Vi skal bare ha integrasjons- og prod-brancher liggende. Delete-on-merge
+# tar PR-brancher ved merge, men ikke brancher som merges lokalt, promote-
+# brancher, eller det som lå igjen fra før innstillingen ble slått på.
+#
+# En branch slettes bare når ALLE fire holder:
+#   1. Navnet er ikke i behold-lista (eksakt: main/Main/dev/Dev/DEV/beta/Beta)
+#      og branchen er ikke beskyttet.
+#   2. Siste commit er eldre enn `min-age-days` (default 7).
+#   3. Ingen åpen PR har branchen som head.
+#   4. Innholdet er inne i default-branchen — enten null commits foran
+#      (`compare.ahead_by == 0`), eller en merget PR fra branchen der
+#      PR-ens head-SHA er identisk med branchens nåværende SHA (squash-merge
+#      gjør at commit-telling lyver, derfor SHA-sjekken).
+#
+# Alt annet beholdes og listes som «uavklart» i run-summary, så et menneske
+# kan ta stilling. Slettede brancher logges med SHA — gjenopprett med
+#   gh api -X POST repos/<eier>/<repo>/git/refs -f ref=refs/heads/<navn> -f sha=<sha>
+#
+# Token: BRANCH_SWEEP_TOKEN — PAT med repo-tilgang i alle tre eierne
+# (kilden er Doppler felles/prd → GITHUB_BRANCH_SWEEP_TOKEN). GITHUB_TOKEN
+# rekker bare dette repoet og kan ikke brukes.
+name: Branch-sveip
+
+on:
+  schedule:
+    - cron: '17 4 * * 1' # mandager 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Bare rapporter, ikke slett
+        type: boolean
+        default: true
+      min-age-days:
+        description: Minste alder på siste commit (dager)
+        type: string
+        default: '7'
+      owners:
+        description: Eiere, kommaseparert
+        type: string
+        default: 'Framtidmedia-no,Gange-Rolv-AS,frlund3'
+
+permissions: {}
+
+jobs:
+  sveip:
+    name: Slett mergede brancher eldre enn ${{ inputs.min-age-days || '7' }} dager
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.BRANCH_SWEEP_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+      MIN_AGE_DAYS: ${{ inputs.min-age-days || '7' }}
+      OWNERS: ${{ inputs.owners || 'Framtidmedia-no,Gange-Rolv-AS,frlund3' }}
+      KEEP_REGEX: '^(main|Main|dev|Dev|DEV|beta|Beta)$'
+    steps:
+      - name: Sjekk token
+        shell: bash
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Secret BRANCH_SWEEP_TOKEN mangler. Sett den fra Doppler felles/prd (GITHUB_BRANCH_SWEEP_TOKEN)."
+            exit 1
+          fi
+          gh api user --jq '"Kjører som " + .login'
+
+      - name: Sveip
+        shell: bash
+        run: |
+          set -uo pipefail
+          now=$(date +%s)
+          min_age_sec=$(( MIN_AGE_DAYS * 86400 ))
+          slettet=0; uavklart=0; beholdt_unge=0; beholdt_pr=0; feil=0
+          slettet_liste=""; uavklart_liste=""; feil_liste=""
+
+          IFS=',' read -ra eiere <<< "$OWNERS"
+          for eier in "${eiere[@]}"; do
+            eier=$(echo "$eier" | xargs)
+            gh repo list "$eier" --limit 300 --no-archived \
+              --json nameWithOwner,defaultBranchRef \
+              --jq '.[] | [.nameWithOwner, .defaultBranchRef.name] | @tsv' \
+            | while IFS=$'\t' read -r repo def; do
+              echo "::group::$repo (default: $def)"
+              aapne_pr=$(gh pr list -R "$repo" --state open --limit 500 --json headRefName --jq '.[].headRefName' || true)
+              mergede_pr=$(gh pr list -R "$repo" --state merged --limit 2000 --json headRefName,headRefOid --jq '.[] | .headRefName + "\t" + .headRefOid' || true)
+
+              gh api --paginate "repos/$repo/branches?per_page=100" \
+                --jq '.[] | [.name, (.protected|tostring), .commit.sha] | @tsv' \
+              | while IFS=$'\t' read -r br prot sha; do
+                [[ "$br" =~ $KEEP_REGEX ]] && continue
+                [ "$prot" = "true" ] && { echo "  behold (beskyttet): $br"; continue; }
+
+                if grep -qxF "$br" <<< "$aapne_pr"; then
+                  echo "  behold (åpen PR): $br"; echo "pr" >> /tmp/beholdt; continue
+                fi
+
+                cdate=$(gh api "repos/$repo/commits/$sha" --jq '.commit.committer.date' 2>/dev/null || echo "")
+                if [ -z "$cdate" ]; then echo "  FEIL (fant ikke commit): $br"; echo "$repo	$br	commit" >> /tmp/feil; continue; fi
+                cts=$(date -d "$cdate" +%s)
+                if [ $(( now - cts )) -lt "$min_age_sec" ]; then
+                  echo "  behold (under $MIN_AGE_DAYS d): $br"; echo "ung" >> /tmp/beholdt; continue
+                fi
+
+                inne="nei"
+                ahead=$(gh api "repos/$repo/compare/$def...$br" --jq '.ahead_by' 2>/dev/null || echo "?")
+                if [ "$ahead" = "0" ]; then
+                  inne="ahead=0"
+                else
+                  pr_sha=$(awk -F'\t' -v b="$br" '$1==b{print $2; exit}' <<< "$mergede_pr")
+                  [ -n "$pr_sha" ] && [ "$pr_sha" = "$sha" ] && inne="merget PR, SHA lik"
+                fi
+
+                if [ "$inne" = "nei" ]; then
+                  echo "  UAVKLART (ahead=$ahead, ingen matchende merget PR): $br"
+                  echo "$repo	$br	$sha	ahead=$ahead" >> /tmp/uavklart; continue
+                fi
+
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "  [tørrkjøring] ville slettet ($inne): $br"
+                else
+                  if gh api -X DELETE "repos/$repo/git/refs/heads/$br" >/dev/null 2>&1; then
+                    echo "  slettet ($inne): $br"
+                  else
+                    echo "  FEIL (sletting): $br"; echo "$repo	$br	slett" >> /tmp/feil; continue
+                  fi
+                fi
+                echo "$repo	$br	$sha	$inne" >> /tmp/slettet
+              done
+              echo "::endgroup::"
+            done
+          done
+
+          touch /tmp/slettet /tmp/uavklart /tmp/feil /tmp/beholdt
+          slettet=$(wc -l < /tmp/slettet | tr -d ' ')
+          uavklart=$(wc -l < /tmp/uavklart | tr -d ' ')
+          feil=$(wc -l < /tmp/feil | tr -d ' ')
+          beholdt_unge=$(grep -c '^ung$' /tmp/beholdt || true)
+          beholdt_pr=$(grep -c '^pr$' /tmp/beholdt || true)
+
+          {
+            if [ "$DRY_RUN" = "true" ]; then echo "# Branch-sveip (tørrkjøring)"; else echo "# Branch-sveip"; fi
+            echo
+            echo "| | Antall |"; echo "|---|---|"
+            if [ "$DRY_RUN" = "true" ]; then echo "| Ville slettet | $slettet |"; else echo "| Slettet | $slettet |"; fi
+            echo "| Uavklart (beholdt) | $uavklart |"
+            echo "| Beholdt, under $MIN_AGE_DAYS dager | $beholdt_unge |"
+            echo "| Beholdt, åpen PR | $beholdt_pr |"
+            echo "| Feil | $feil |"
+            if [ "$slettet" -gt 0 ]; then
+              echo; echo "<details><summary>Slettet (repo, branch, SHA, grunn)</summary>"; echo; echo '```'
+              cat /tmp/slettet; echo '```'; echo "</details>"
+            fi
+            if [ "$uavklart" -gt 0 ]; then
+              echo; echo "## Uavklart — trenger et menneske"; echo
+              echo "Eldre enn $MIN_AGE_DAYS dager, ingen åpen PR, men innholdet er ikke bekreftet inne i default-branchen."; echo; echo '```'
+              cat /tmp/uavklart; echo '```'
+            fi
+            if [ "$feil" -gt 0 ]; then
+              echo; echo "## Feil"; echo; echo '```'; cat /tmp/feil; echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$feil" -eq 0 ] || exit 1
