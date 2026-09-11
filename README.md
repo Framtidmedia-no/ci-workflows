@@ -30,3 +30,23 @@ Valgfrie `with:`-inputs: `node-version` (default 24, brukes bare uten `.nvmrc`),
 
 Pakkebehandler oppdages fra lockfila. Repoer uten ESLint installert får en notice og porten hopper over.
 Krasjer ESLint på PR-en (ugyldig config, manglende plugin) feiler porten — det er en reell feil.
+
+## branch-sweep.yml — Ukentlig branch-sveip
+
+Kjører mandager og sletter brancher i alle repoer hos Framtidmedia-no, Gange-Rolv-AS og frlund3
+som er **merget og eldre enn 7 dager**. Behold-lista er eksakt: `main`, `Main`, `dev`, `Dev`, `DEV`,
+`beta`, `Beta`, pluss beskyttede brancher og brancher med åpen PR.
+
+«Merget» betyr null commits foran default-branchen, *eller* en merget PR fra branchen der PR-ens
+head-SHA er identisk med branchens nåværende SHA (squash-merge gjør at commit-telling lyver).
+Alt annet beholdes og listes som «uavklart» i run-summary. Slettede brancher logges med SHA og kan
+gjenopprettes:
+
+```bash
+gh api -X POST repos/<eier>/<repo>/git/refs -f ref=refs/heads/<navn> -f sha=<sha>
+```
+
+Kjør manuelt fra Actions-fanen. `dry-run` er på som default ved manuell kjøring.
+
+Trenger secret `BRANCH_SWEEP_TOKEN` (PAT med repo-tilgang i alle tre eierne; kilden er Doppler
+`felles/prd` → `GITHUB_BRANCH_SWEEP_TOKEN`). Dette er ikke en reusable workflow — den kjører bare her.
