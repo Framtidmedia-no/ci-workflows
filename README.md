@@ -50,3 +50,18 @@ Kjør manuelt fra Actions-fanen. `dry-run` er på som default ved manuell kjøri
 
 Trenger secret `BRANCH_SWEEP_TOKEN` (PAT med repo-tilgang i alle tre eierne; kilden er Doppler
 `felles/prd` → `GITHUB_BRANCH_SWEEP_TOKEN`). Dette er ikke en reusable workflow — den kjører bare her.
+
+## tree-gronn.yml — hopp over duplikat-push
+
+Svarer `skip=true` på push når samme tree (identiske filer) allerede var grønt på en `pull_request`-kjøring
+av samme workflow. PR, `workflow_dispatch` og `schedule` hoppes aldri over. Se toppkommentaren i filen.
+
+```yaml
+jobs:
+  tre:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/tree-gronn.yml@main
+    permissions: { contents: read, actions: read }
+  test:
+    needs: tre
+    if: needs.tre.outputs.skip != 'true'
+```
