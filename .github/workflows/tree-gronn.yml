@@ -1,0 +1,72 @@
+# Felles «hopp over duplikat-push» (FRA-863).
+#
+# På push til dev/main er innholdet ofte byte-for-byte det samme som en PR-kjøring av samme
+# workflow allerede godkjente (merge uten at basen flyttet seg, eller promotering av dev til main).
+# Denne jobben slår opp tree-SHA for push-commiten mot tidligere vellykkede `pull_request`-kjøringer
+# av samme workflow og svarer `skip=true` ved treff.
+#
+# Bevisst konservativ:
+#   - Bare push kan hoppes over. PR-kjøringer (og workflow_dispatch/schedule) kjører alltid, så
+#     påkrevd status på PR er uendret.
+#   - Bare treff mot en `pull_request`-kjøring teller, aldri mot en annen push. Da kan et hoppet
+#     løp ikke bli «bevis» for neste (ingen kjede av hopp).
+#   - Samme tree = identiske filer. Flyttet basen seg mellom PR og merge, er treet ulikt og
+#     alt kjører som før.
+#   - Feiler oppslaget, svarer jobben `skip=false` (kjør alt).
+#
+# Bruk i repoets CI-workflow:
+#   jobs:
+#     tre:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/tree-gronn.yml@main
+#       permissions: { contents: read, actions: read }
+#     test:
+#       needs: tre
+#       if: needs.tre.outputs.skip != 'true'
+name: Tre allerede grønn
+
+on:
+  workflow_call:
+    outputs:
+      skip:
+        description: '«true» når samme tree allerede er grønn på en PR-kjøring av denne workflowen'
+        value: ${{ jobs.sjekk.outputs.skip }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sjekk:
+    name: Tre allerede grønn?
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      skip: ${{ steps.s.outputs.skip }}
+    steps:
+      - id: s
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" != "push" ]; then
+            echo "Event $EVENT: kjører alltid."
+            exit 0
+          fi
+          tre=$(gh api "repos/${REPO}/git/commits/${SHA}" --jq .tree.sha) || { echo "Fant ikke tree, kjører alt."; exit 0; }
+          wf=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq .workflow_id) || { echo "Fant ikke workflow, kjører alt."; exit 0; }
+          kandidater=$(gh api "repos/${REPO}/actions/workflows/${wf}/runs?event=pull_request&status=success&per_page=100" \
+            --jq '[.workflow_runs[].head_sha] | unique | .[]') || { echo "Fant ikke kjøringer, kjører alt."; exit 0; }
+          for kandidat in $kandidater; do
+            t=$(gh api "repos/${REPO}/git/commits/${kandidat}" --jq .tree.sha 2>/dev/null) || continue
+            if [ "$t" = "$tre" ]; then
+              echo "Tree ${tre} var allerede grønt på PR-kjøring for ${kandidat}. Hopper over."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "Ingen tidligere grønn PR-kjøring med tree ${tre}. Kjører alt."
