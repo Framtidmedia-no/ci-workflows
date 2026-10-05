@@ -52,7 +52,8 @@ on:
 jobs:
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
-    runs-on: ubuntu-latest
+    # FRA-947: variabelen CI_RUNS_ON (JSON) i kallende repo styrer runner. Uten den: ubuntu-latest.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       WD: ${{ inputs.working-directory }}
