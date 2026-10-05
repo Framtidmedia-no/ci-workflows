@@ -38,7 +38,8 @@ permissions:
 jobs:
   sjekk:
     name: Tre allerede grønn?
-    runs-on: ubuntu-latest
+    # FRA-947: variabelen CI_RUNS_ON (JSON) i kallende repo styrer runner. Uten den: ubuntu-latest.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 3
     outputs:
       skip: ${{ steps.s.outputs.skip }}
