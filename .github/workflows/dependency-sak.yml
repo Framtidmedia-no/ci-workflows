@@ -1,0 +1,68 @@
+# Lager en Linear-sak for hver major-oppdatering og hvert sikkerhetsfiks fra Renovate.
+# Minor og patch automerges og får ingen sak. Dependency Dashboard er av, så det kommer ingen "evig" sak.
+#
+# Team velges av org-variabelen LINEAR_TEAM_KEY (repo-variabel overstyrer, f.eks. MOBILE/VEG/ESP).
+# Nøkkelen LINEAR_API_KEY er en org-secret. Uten den hopper workflowet over, uten å feile.
+name: Dependency-sak i Linear
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  lag-sak:
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      (contains(github.event.pull_request.labels.*.name, 'major') ||
+       contains(github.event.pull_request.labels.*.name, 'security'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+      TEAM_KEY: ${{ vars.LINEAR_TEAM_KEY }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      IS_SECURITY: ${{ contains(github.event.pull_request.labels.*.name, 'security') }}
+    steps:
+      - name: Opprett sak hvis den ikke finnes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${LINEAR_API_KEY:-}" ] || [ -z "${TEAM_KEY:-}" ]; then
+            echo "::notice::LINEAR_API_KEY eller LINEAR_TEAM_KEY mangler. Hopper over."
+            exit 0
+          fi
+          gql() {
+            curl -sS --fail-with-body https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d "$1"
+          }
+
+          # Finnes saken fra før? (samme PR-URL som vedlegg)
+          existing=$(gql "$(jq -n --arg u "$PR_URL" '{query:"query($u:String!){attachmentsForURL(url:$u){nodes{id}}}",variables:{u:$u}}')" \
+            | jq -r '.data.attachmentsForURL.nodes | length')
+          if [ "$existing" != "0" ]; then
+            echo "Sak finnes allerede for $PR_URL"
+            exit 0
+          fi
+
+          team_id=$(gql "$(jq -n --arg k "$TEAM_KEY" '{query:"query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}",variables:{k:$k}}')" \
+            | jq -r '.data.teams.nodes[0].id // empty')
+          [ -n "$team_id" ] || { echo "::error::Fant ikke Linear-team $TEAM_KEY"; exit 1; }
+
+          if [ "$IS_SECURITY" = "true" ]; then prio=2; kind="Sikkerhetsfiks"; else prio=3; kind="Major-oppdatering"; fi
+          title="$kind: $PR_TITLE ($REPO)"
+          desc=$(printf '%s i %s.\n\nPR: %s\n\nRenovate-PR-en lukkes eller merges av Renovate/GitHub. Saken lages automatisk av workflowet «Dependency-sak i Linear».' "$kind" "$REPO" "$PR_URL")
+
+          issue_id=$(gql "$(jq -n --arg t "$team_id" --arg ti "$title" --arg d "$desc" --argjson p "$prio" \
+            '{query:"mutation($i:IssueCreateInput!){issueCreate(input:$i){success issue{id identifier}}}",variables:{i:{teamId:$t,title:$ti,description:$d,priority:$p}}}')" \
+            | jq -r '.data.issueCreate.issue.id // empty')
+          [ -n "$issue_id" ] || { echo "::error::Kunne ikke opprette sak"; exit 1; }
+
+          gql "$(jq -n --arg i "$issue_id" --arg u "$PR_URL" --arg t "PR #$PR_NUMBER" \
+            '{query:"mutation($i:String!,$u:String!,$t:String){attachmentLinkURL(issueId:$i,url:$u,title:$t){success}}",variables:{i:$i,u:$u,t:$t}}')" >/dev/null
+          echo "Opprettet sak for $PR_URL"
