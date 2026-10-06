@@ -31,6 +31,24 @@ Valgfrie `with:`-inputs: `node-version` (default 24, brukes bare uten `.nvmrc`),
 Pakkebehandler oppdages fra lockfila. Repoer uten ESLint installert får en notice og porten hopper over.
 Krasjer ESLint på PR-en (ugyldig config, manglende plugin) feiler porten — det er en reell feil.
 
+## ssrf-drift.yml — SSRF-guard er lik kanonisk (FRA-976)
+
+Feiler hvis den genererte `src/lib/net/ssrf.ts` mangler, er redigert for hånd eller er utdatert mot
+`security-guard.json` (sha256 per variant, bumpes sammen med `src/ssrf.ts` i
+[framtid-security](https://github.com/Framtidmedia-no/framtid-security)). Kilden synkes inn med
+`node scripts/sync.mjs <repo> [--server-only]` der.
+
+```yaml
+name: SSRF-drift
+on:
+  pull_request:
+jobs:
+  ssrf-drift:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/ssrf-drift.yml@main
+```
+
+Valgfri input: `path` (default `src/lib/net/ssrf.ts`).
+
 ## branch-sweep.yml — Ukentlig branch-sveip
 
 Kjører mandager og sletter brancher i alle repoer hos Framtidmedia-no, Gange-Rolv-AS og frlund3

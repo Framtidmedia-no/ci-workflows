@@ -1,0 +1,63 @@
+# Drift-sjekk for den genererte SSRF-guarden (FRA-976).
+#
+# Kilden er Framtidmedia-no/framtid-security (src/ssrf.ts). Konsumentene har en GENERERT kopi,
+# vanligvis src/lib/net/ssrf.ts, laget med `node scripts/sync.mjs` i framtid-security. Headeren i
+# fila bærer variant (plain | server-only) og sha256 av innholdet etter markørlinjen.
+#
+# Jobben feiler hvis fila
+#   (a) mangler eller ikke er generert,
+#   (b) er redigert for hånd (innholdet matcher ikke hashen i headeren), eller
+#   (c) er utdatert: hashen er ikke lik gjeldende hash for varianten i security-guard.json (i dette repoet).
+#
+# Repoet er offentlig, så manifestet hentes uten token. Kall fra konsumenten:
+#   jobs:
+#     ssrf-drift:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/ssrf-drift.yml@main
+#       with:
+#         path: src/lib/net/ssrf.ts   # valgfritt
+name: SSRF-drift
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Sti til den genererte guarden i konsumenten
+        type: string
+        default: src/lib/net/ssrf.ts
+
+permissions:
+  contents: read
+
+jobs:
+  ssrf-drift:
+    name: SSRF-guard er lik kanonisk (framtid-security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Hent manifest og sammenlign
+        env:
+          GUARD_PATH: ${{ inputs.path }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/Framtidmedia-no/ci-workflows/main/security-guard.json -o "$RUNNER_TEMP/security-guard.json"
+          node <<'NODE'
+          const { createHash } = require('node:crypto')
+          const fs = require('node:fs')
+          const sti = process.env.GUARD_PATH
+          const MARKOR = '// ---- framtid-security:start ----'
+          const feil = (m) => { console.error(`::error file=${sti}::${m}`); process.exit(1) }
+          if (!fs.existsSync(sti)) feil(`${sti} finnes ikke. Generer den: node scripts/sync.mjs <repo> i Framtidmedia-no/framtid-security.`)
+          const tekst = fs.readFileSync(sti, 'utf8')
+          const idx = tekst.indexOf(`${MARKOR}\n`)
+          const m = tekst.match(/^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \(variant: (\S+), sha256: ([0-9a-f]{64})\)/)
+          if (idx < 0 || !m) feil('Fila er ikke generert fra framtid-security (header/markør mangler). Ikke skriv guarden for hånd.')
+          const [, kilde, variant, hashIHeader] = m
+          const hash = createHash('sha256').update(tekst.slice(idx + MARKOR.length + 1)).digest('hex')
+          if (hash !== hashIHeader) feil('Fila er redigert for hånd (innholdet matcher ikke hashen i headeren). Endre i framtid-security og synk på nytt.')
+          const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/security-guard.json`, 'utf8'))
+          const gjeldende = manifest.sha256[variant]
+          if (!gjeldende) feil(`Ukjent variant "${variant}" i headeren.`)
+          if (hash !== gjeldende) feil(`Utdatert: kopien er fra framtid-security@${kilde}, gjeldende er @${manifest.kilde}. Kjør: node scripts/sync.mjs <repo>${variant === 'server-only' ? ' --server-only' : ''} i framtid-security.`)
+          console.log(`OK: ${sti} (variant ${variant}) er lik kanonisk framtid-security@${manifest.kilde}`)
+          NODE
