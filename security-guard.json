@@ -1,7 +1,6 @@
 {
-  "kilde": "929c7a49f37a",
   "sha256": {
-    "plain": "44fba5faea13fa96f3761a4944e86e10865dde5bef97bb506bb69325d2cd9156",
-    "server-only": "9ca42ace4c7d66bd6208b5ce915ed20aad5d1b32e271355a60b2a6fb03969035"
+    "plain": "bf12ae35ffb0cec1c7376576a5d948206efd30d72187addad25198b31da2294b",
+    "server-only": "50a14fb2fafa39d8f6cb34becacc4d9dffb0f523fe4c416b0efe66d4d6627643"
   }
 }
