@@ -12,6 +12,13 @@ on:
 permissions:
   contents: read
 
+# Renovate setter flere labels rett etter at PR-en er åpnet, og hvert event starter en kjøring.
+# Uten kø ser alle kjøringene «ingen sak» samtidig og lager én sak hver. Køen gjør at den andre
+# kjøringen finner vedlegget fra den første.
+concurrency:
+  group: dependency-sak-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   lag-sak:
     if: >-
