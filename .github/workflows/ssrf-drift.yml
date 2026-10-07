@@ -15,6 +15,8 @@
 #       uses: Framtidmedia-no/ci-workflows/.github/workflows/ssrf-drift.yml@main
 #       with:
 #         path: src/lib/net/ssrf.ts   # valgfritt
+#         hent-bilde-path: src/lib/net/hent-bilde.ts      # valgfritt
+#         eslint-path: eslint.ingen-ra-fetch.mjs          # valgfritt
 name: SSRF-drift
 
 on:
@@ -24,6 +26,14 @@ on:
         description: Sti til den genererte guarden i konsumenten
         type: string
         default: src/lib/net/ssrf.ts
+      hent-bilde-path:
+        description: Sti til den genererte hent-bilde.ts (tom = hopp over)
+        type: string
+        default: ''
+      eslint-path:
+        description: Sti til den genererte eslint.ingen-ra-fetch.mjs (tom = hopp over)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -38,6 +48,8 @@ jobs:
       - name: Hent manifest og sammenlign
         env:
           GUARD_PATH: ${{ inputs.path }}
+          HENT_BILDE_PATH: ${{ inputs.hent-bilde-path }}
+          ESLINT_PATH: ${{ inputs.eslint-path }}
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 https://raw.githubusercontent.com/Framtidmedia-no/ci-workflows/main/security-guard.json -o "$RUNNER_TEMP/security-guard.json"
@@ -60,4 +72,24 @@ jobs:
           if (!gjeldende) feil(`Ukjent variant "${variant}" i headeren.`)
           if (hash !== gjeldende) feil(`Utdatert: kopien er fra framtid-security@${kilde}, gjeldende innhold har sha256 ${gjeldende.slice(0, 12)}. Kjør: node scripts/sync.mjs <repo>${variant === 'server-only' ? ' --server-only' : ''} i framtid-security.`)
           console.log(`OK: ${sti} (variant ${variant}) er lik kanonisk (sha256 ${hash.slice(0, 12)}, kilde framtid-security@${kilde})`)
+          // Tilleggsfiler (hent-bilde, eslint-regel): header (navn[, import: <sti>], sha256 av kanonisk tekst).
+          for (const [sti, navnForventet] of [[process.env.HENT_BILDE_PATH, 'hent-bilde'], [process.env.ESLINT_PATH, 'eslint-ingen-ra-fetch']]) {
+            if (!sti) continue
+            const feilT = (m) => { console.error(`::error file=${sti}::${m}`); process.exit(1) }
+            if (!fs.existsSync(sti)) feilT(`${sti} finnes ikke. Generer den med scripts/sync.mjs i framtid-security.`)
+            const t = fs.readFileSync(sti, 'utf8')
+            const i = t.indexOf(`${MARKOR}\n`)
+            const h = t.match(/^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \((hent-bilde|eslint-ingen-ra-fetch)(?:, import: (\S+))?, sha256: ([0-9a-f]{64})\)/)
+            if (i < 0 || !h) feilT('Fila er ikke generert fra framtid-security (header/markør mangler).')
+            const [, k, navn, imp, hashH] = h
+            if (navn !== navnForventet) feilT(`Forventet ${navnForventet}, fant ${navn}.`)
+            let innhold = t.slice(i + MARKOR.length + 1)
+            if (imp) innhold = innhold.replace(`from '${imp}'`, "from './ssrf.ts'")
+            const hashN = createHash('sha256').update(innhold).digest('hex')
+            if (hashN !== hashH) feilT('Fila er redigert for hånd. Endre i framtid-security og synk på nytt.')
+            const gj = manifest.tillegg && manifest.tillegg[navn]
+            if (!gj) feilT(`Manifestet mangler ${navn}.`)
+            if (hashN !== gj) feilT(`Utdatert: kopien er fra framtid-security@${k}, gjeldende sha256 er ${gj.slice(0, 12)}. Synk på nytt.`)
+            console.log(`OK: ${sti} (${navn}) er lik kanonisk (sha256 ${hashN.slice(0, 12)})`)
+          }
           NODE
