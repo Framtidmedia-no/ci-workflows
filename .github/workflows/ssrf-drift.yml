@@ -58,12 +58,25 @@ jobs:
           const fs = require('node:fs')
           const sti = process.env.GUARD_PATH
           const MARKOR = '// ---- framtid-security:start ----'
+          const L2 = '// Endringer gjøres i Framtidmedia-no/framtid-security (src/ssrf.ts) og synkes med scripts/sync.mjs.'
+          const L2_TILLEGG = '// Endringer gjøres i Framtidmedia-no/framtid-security og synkes med scripts/sync.mjs.'
+          const L3 = '// Drift-sjekk: Framtidmedia-no/ci-workflows/.github/workflows/ssrf-drift.yml'
+          // Alt før markøren må være NØYAKTIG headerlinjene: hashen dekker bare teksten etter markøren,
+          // så kode mellom header og markør (eller CRLF/ekstra linjer) ville ellers passert og kjørt.
+          const lesHeader = (tekst, forsteLinje, linje2) => {
+            const idx = tekst.indexOf(`${MARKOR}\n`)
+            if (idx < 0) return null
+            const l = tekst.slice(0, idx).split('\n')
+            if (l.length !== 4 || l[3] !== '' || l[1] !== linje2 || l[2] !== L3) return null
+            const m = l[0].match(forsteLinje)
+            return m ? { m, idx } : null
+          }
           const feil = (m) => { console.error(`::error file=${sti}::${m}`); process.exit(1) }
           if (!fs.existsSync(sti)) feil(`${sti} finnes ikke. Generer den: node scripts/sync.mjs <repo> i Framtidmedia-no/framtid-security.`)
           const tekst = fs.readFileSync(sti, 'utf8')
-          const idx = tekst.indexOf(`${MARKOR}\n`)
-          const m = tekst.match(/^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \(variant: (\S+), sha256: ([0-9a-f]{64})\)/)
-          if (idx < 0 || !m) feil('Fila er ikke generert fra framtid-security (header/markør mangler). Ikke skriv guarden for hånd.')
+          const hdr = lesHeader(tekst, /^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \(variant: (\S+), sha256: ([0-9a-f]{64})\)$/, L2)
+          if (!hdr) feil('Fila er ikke generert fra framtid-security (headeren må være eksakt de genererte linjene, ingen kode før markøren, LF-linjeskift). Ikke skriv guarden for hånd.')
+          const { m, idx } = hdr
           const [, kilde, variant, hashIHeader] = m
           const hash = createHash('sha256').update(tekst.slice(idx + MARKOR.length + 1)).digest('hex')
           if (hash !== hashIHeader) feil('Fila er redigert for hånd (innholdet matcher ikke hashen i headeren). Endre i framtid-security og synk på nytt.')
@@ -78,9 +91,9 @@ jobs:
             const feilT = (m) => { console.error(`::error file=${sti}::${m}`); process.exit(1) }
             if (!fs.existsSync(sti)) feilT(`${sti} finnes ikke. Generer den med scripts/sync.mjs i framtid-security.`)
             const t = fs.readFileSync(sti, 'utf8')
-            const i = t.indexOf(`${MARKOR}\n`)
-            const h = t.match(/^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \((hent-bilde|eslint-ingen-ra-fetch)(?:, import: (\S+))?, sha256: ([0-9a-f]{64})\)/)
-            if (i < 0 || !h) feilT('Fila er ikke generert fra framtid-security (header/markør mangler).')
+            const hd = lesHeader(t, /^\/\/ GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \((hent-bilde|eslint-ingen-ra-fetch)(?:, import: (\S+))?, sha256: ([0-9a-f]{64})\)$/, L2_TILLEGG)
+            if (!hd) feilT('Fila er ikke generert fra framtid-security (headeren må være eksakt de genererte linjene, ingen kode før markøren, LF-linjeskift).')
+            const { m: h, idx: i } = hd
             const [, k, navn, imp, hashH] = h
             if (navn !== navnForventet) feilT(`Forventet ${navnForventet}, fant ${navn}.`)
             let innhold = t.slice(i + MARKOR.length + 1)
