@@ -1,0 +1,16 @@
+name: Selvtest
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ssrf-drift:
+    name: ssrf-drift.yml avviser manipulerte filer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - run: node --test tests/
