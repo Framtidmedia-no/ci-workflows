@@ -50,10 +50,16 @@ on:
         default: '.'
 
 jobs:
+  # FRA-947: egne runnere først, GitHub sine når de er opptatt. Kallende jobb må ha `actions: read`
+  # for at valget skal kunne se køen; uten det brukes GitHub sine runnere. Se velg-runner.yml.
+  runner:
+    name: Velg runner
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@main
+
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
-    # FRA-947: variabelen CI_RUNS_ON (JSON) i kallende repo styrer runner. Uten den: ubuntu-latest.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.etiketter) }}
     timeout-minutes: 20
     env:
       WD: ${{ inputs.working-directory }}
