@@ -4,8 +4,8 @@
 # Er de egne runnerne så godt som fulle, sendes hele kjøringen til ubuntu-latest (inkludert i
 # abonnementet) i stedet for å stå i kø. Uten CI_RUNS_ON kjører alt på ubuntu-latest.
 #
-# Signalet: antall jobber i det kallende repoet som kjører eller står i kø på self-hosted akkurat
-# nå. Ligger en jobb i kø, er alle runnerne opptatt. Last fra ANDRE repoer på de samme runnerne
+# Signalet: jobber i det kallende repoet på self-hosted akkurat nå. Står EN jobb i kø, er alle
+# runnerne opptatt, og kjøringen går til GitHub. Uten kø brukes terskelen (sum av kjørende jobber). Last fra ANDRE repoer på de samme runnerne
 # ser vi ikke herfra (github.token har ikke org-tilgang). Feiler oppslaget, velges ubuntu-latest.
 # Valget gjelder hele kjøringen, så en PR deles ikke mellom to miljøer.
 #
@@ -58,21 +58,26 @@ jobs:
           grunn="ingen self-hosted konfigurert"
           if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             belastning=0
+            ko=0
             ok=1
             for status in in_progress queued; do
               ider=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$status&per_page=50" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id") || ok=0
               for id in $ider; do
                 n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select((.status == "in_progress" or .status == "queued") and ((.labels | index("self-hosted")) != null))] | length') || { ok=0; continue; }
+                k=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select(.status == "queued" and ((.labels | index("self-hosted")) != null))] | length') || { ok=0; continue; }
                 belastning=$((belastning + n))
+                ko=$((ko + k))
               done
             done
             if [ "$ok" != 1 ]; then
               grunn="oppslaget feilet, bruker GitHub sine runnere"
+            elif [ "$ko" -ge 1 ]; then
+              grunn="$ko jobb(er) står i kø på self-hosted, så alle runnerne er opptatt: sender til GitHub sine runnere"
             elif [ "$belastning" -ge "$TERSKEL" ]; then
               grunn="$belastning jobber på self-hosted (terskel $TERSKEL): sender til GitHub sine runnere"
             else
               valg="$BASE"
-              grunn="$belastning jobber på self-hosted (terskel $TERSKEL): bruker egne runnere"
+              grunn="$belastning jobber på self-hosted, ingen i kø: bruker egne runnere"
             fi
           fi
           echo "etiketter=$valg" >> "$GITHUB_OUTPUT"
