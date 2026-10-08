@@ -1,0 +1,75 @@
+# Felles runner-valg (FRA-947): egne runnere først, GitHub sine når de er opptatt.
+#
+# CI_RUNS_ON (JSON, repo-variabel) er foretrukket runner, f.eks. ["self-hosted","framtid-ci"].
+# Er de egne runnerne så godt som fulle, sendes hele kjøringen til ubuntu-latest (inkludert i
+# abonnementet) i stedet for å stå i kø. Uten CI_RUNS_ON kjører alt på ubuntu-latest.
+#
+# Signalet: antall jobber i det kallende repoet som kjører eller står i kø på self-hosted akkurat
+# nå. Ligger en jobb i kø, er alle runnerne opptatt. Last fra ANDRE repoer på de samme runnerne
+# ser vi ikke herfra (github.token har ikke org-tilgang). Feiler oppslaget, velges ubuntu-latest.
+# Valget gjelder hele kjøringen, så en PR deles ikke mellom to miljøer.
+#
+# Bruk i kallende repo:
+#   jobs:
+#     runner:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@main
+#     bygg:
+#       needs: runner
+#       runs-on: ${{ fromJSON(needs.runner.outputs.etiketter) }}
+#
+# Kallende jobb må ha `permissions: { actions: read, contents: read }`.
+# Variabler i kallende repo: CI_RUNS_ON, CI_OVERLOP_TERSKEL (standard 8 av 9 runnere).
+name: Velg runner
+
+on:
+  workflow_call:
+    outputs:
+      etiketter:
+        description: JSON for runs-on, f.eks. "ubuntu-latest" eller ["self-hosted","framtid-ci"]
+        value: ${{ jobs.velg.outputs.etiketter }}
+
+# Ingen permissions-blokk her: en gjenbrukt workflow kan ikke be om mer enn kallende jobb gir, og
+# en blokk ville stoppet kallere som bare har `contents: read`. Kallende jobb må gi `actions: read`
+# for at oppslaget skal virke. Uten det feiler oppslaget og valget blir ubuntu-latest (trygt).
+
+jobs:
+  velg:
+    name: Velg runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      etiketter: ${{ steps.velg.outputs.etiketter || '"ubuntu-latest"' }}
+    steps:
+      - id: velg
+        # Jobben skal aldri feile: en feilet jobb hopper over alt som avhenger av den, og hoppet teller som grønt.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ vars.CI_RUNS_ON }}
+          TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '8' }}
+        run: |
+          github='"ubuntu-latest"'
+          valg="$github"
+          grunn="ingen self-hosted konfigurert"
+          if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
+            belastning=0
+            ok=1
+            for status in in_progress queued; do
+              ider=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$status&per_page=50" --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id") || ok=0
+              for id in $ider; do
+                n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select((.status == "in_progress" or .status == "queued") and ((.labels | index("self-hosted")) != null))] | length') || { ok=0; continue; }
+                belastning=$((belastning + n))
+              done
+            done
+            if [ "$ok" != 1 ]; then
+              grunn="oppslaget feilet, bruker GitHub sine runnere"
+            elif [ "$belastning" -ge "$TERSKEL" ]; then
+              grunn="$belastning jobber på self-hosted (terskel $TERSKEL): sender til GitHub sine runnere"
+            else
+              valg="$BASE"
+              grunn="$belastning jobber på self-hosted (terskel $TERSKEL): bruker egne runnere"
+            fi
+          fi
+          echo "etiketter=$valg" >> "$GITHUB_OUTPUT"
+          echo "Runner: $valg ($grunn)"
+          echo "**Runner:** \`$valg\` — $grunn" >> "$GITHUB_STEP_SUMMARY"
