@@ -62,7 +62,8 @@ jobs:
           grunn="ingen self-hosted konfigurert"
           # Sentral status (alle repoer): fersk (maks 20 min) og alle egne runnere opptatt.
           opptatt_sentralt=0; totalt_sentralt=0; alder_sentralt=999999
-          if [ -n "$STATUS" ]; then
+          # Bare «tall,tall,tall» godtas, så verdien aldri kan tolkes som kode i aritmetikken under.
+          if [[ "$STATUS" =~ ^[0-9]{1,4},[0-9]{1,4},[0-9]{1,12}$ ]]; then
             IFS=, read -r opptatt_sentralt totalt_sentralt tid_sentralt <<< "$STATUS"
             alder_sentralt=$(( $(date +%s) - ${tid_sentralt:-0} ))
           fi
