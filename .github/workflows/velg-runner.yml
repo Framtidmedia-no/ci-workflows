@@ -23,6 +23,11 @@ name: Velg runner
 
 on:
   workflow_call:
+    inputs:
+      github-etiketter:
+        description: 'JSON for GitHub-runneren som brukes som fallback, f.eks. "ubuntu-26.04"'
+        type: string
+        default: '"ubuntu-latest"'
     outputs:
       etiketter:
         description: JSON for runs-on, f.eks. "ubuntu-latest" eller ["self-hosted","framtid-ci"]
@@ -38,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
-      etiketter: ${{ steps.velg.outputs.etiketter || '"ubuntu-latest"' }}
+      etiketter: ${{ steps.velg.outputs.etiketter || inputs.github-etiketter }}
     steps:
       - id: velg
         # Jobben skal aldri feile: en feilet jobb hopper over alt som avhenger av den, og hoppet teller som grønt.
@@ -46,10 +51,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ vars.CI_RUNS_ON }}
+          GITHUB_VALG: ${{ inputs.github-etiketter }}
           TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '8' }}
         run: |
-          github='"ubuntu-latest"'
-          valg="$github"
+          valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
           if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             belastning=0
