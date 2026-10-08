@@ -4,7 +4,9 @@
 # Er de egne runnerne så godt som fulle, sendes hele kjøringen til ubuntu-latest (inkludert i
 # abonnementet) i stedet for å stå i kø. Uten CI_RUNS_ON kjører alt på ubuntu-latest.
 #
-# Signalet: jobber i det kallende repoet på self-hosted akkurat nå. Står EN jobb i kø, er alle
+# Signal 1 (alle repoer): runner-status.yml publiserer hvor mange egne runnere som er opptatt (CI_RUNNER_STATUS).
+# Er alle opptatt og tallet er under 20 minutter gammelt, går kjøringen til GitHub.
+# Signal 2: jobber i det kallende repoet på self-hosted akkurat nå. Står EN jobb i kø, er alle
 # runnerne opptatt, og kjøringen går til GitHub. Uten kø brukes terskelen (sum av kjørende jobber). Last fra ANDRE repoer på de samme runnerne
 # ser vi ikke herfra (github.token har ikke org-tilgang). Feiler oppslaget, velges ubuntu-latest.
 # Valget gjelder hele kjøringen, så en PR deles ikke mellom to miljøer.
@@ -53,9 +55,20 @@ jobs:
           BASE: ${{ vars.CI_RUNS_ON }}
           GITHUB_VALG: ${{ inputs.github-etiketter }}
           TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '8' }}
+          # Organisasjonsvariabel fra runner-status.yml: «opptatt,totalt,tidsstempel». Gjelder alle repoer.
+          STATUS: ${{ vars.CI_RUNNER_STATUS }}
         run: |
           valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
+          # Sentral status (alle repoer): fersk (maks 20 min) og alle egne runnere opptatt.
+          opptatt_sentralt=0; totalt_sentralt=0; alder_sentralt=999999
+          if [ -n "$STATUS" ]; then
+            IFS=, read -r opptatt_sentralt totalt_sentralt tid_sentralt <<< "$STATUS"
+            alder_sentralt=$(( $(date +%s) - ${tid_sentralt:-0} ))
+          fi
+          sentralt_fullt() {
+            [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 1200 ]
+          }
           if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             belastning=0
             ko=0
@@ -71,6 +84,8 @@ jobs:
             done
             if [ "$ok" != 1 ]; then
               grunn="oppslaget feilet, bruker GitHub sine runnere"
+            elif sentralt_fullt; then
+              grunn="alle egne runnere er opptatt ($opptatt_sentralt av $totalt_sentralt, status $alder_sentralt s gammel): sender til GitHub sine runnere"
             elif [ "$ko" -ge 1 ]; then
               grunn="$ko jobb(er) står i kø på self-hosted, så alle runnerne er opptatt: sender til GitHub sine runnere"
             elif [ "$belastning" -ge "$TERSKEL" ]; then

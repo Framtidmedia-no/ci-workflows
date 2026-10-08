@@ -1,0 +1,60 @@
+# Publiserer hvor mange av de egne runnerne (framtid-ci) som er opptatt, som organisasjonsvariabelen
+# CI_RUNNER_STATUS = «opptatt,totalt,tidsstempel». velg-runner.yml leser den og sender kjøringer til
+# GitHub sine runnere når alle er opptatt (FRA-947). github.token kan ikke lese runner-status på
+# organisasjonen, så dette gjøres av GitHub-appen «framtid-ci-status» (kun disse to rettighetene:
+# runner-status les, organisasjonsvariabler skriv). Nøkkel og Client ID ligger som org-hemmelighet/-variabel.
+name: Runner-status
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: runner-status
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publiser:
+    name: Publiser runner-status
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Hent kortlevd token fra GitHub-appen
+        id: app
+        env:
+          APP_KEY: ${{ secrets.RUNNER_STATUS_APP_KEY }}
+          CLIENT_ID: ${{ vars.RUNNER_STATUS_APP_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          nokkel=$(mktemp)
+          trap 'rm -f "$nokkel"' EXIT
+          printf '%s\n' "$APP_KEY" > "$nokkel"
+          b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          naa=$(date +%s)
+          hdr=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
+          pl=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' $((naa - 30)) $((naa + 540)) "$CLIENT_ID" | b64)
+          sig=$(printf '%s.%s' "$hdr" "$pl" | openssl dgst -sha256 -sign "$nokkel" | b64)
+          jwt="$hdr.$pl.$sig"
+          api() { curl -fsS -H "Accept: application/vnd.github+json" "$@"; }
+          iid=$(api -H "Authorization: Bearer $jwt" https://api.github.com/orgs/Framtidmedia-no/installation | jq -r .id)
+          # Tokenet får bare de to rettighetene som trengs, selv om installasjonen har flere.
+          token=$(api -X POST -H "Authorization: Bearer $jwt" "https://api.github.com/app/installations/$iid/access_tokens" \
+            -d '{"permissions":{"organization_self_hosted_runners":"read","organization_actions_variables":"write"}}' | jq -r .token)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - name: Les runner-status og lagre den
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          tall=$(gh api "orgs/Framtidmedia-no/actions/runners?per_page=100" \
+            --jq '[.runners[] | select(.status == "online") | select(any(.labels[]; .name == "framtid-ci"))] | "\(([.[] | select(.busy)] | length)) \(length)"')
+          opptatt=${tall% *}; totalt=${tall#* }
+          verdi="$opptatt,$totalt,$(date +%s)"
+          gh variable set CI_RUNNER_STATUS --org Framtidmedia-no --visibility all --body "$verdi"
+          echo "CI_RUNNER_STATUS = $verdi"
+          echo "**Runner-status:** $opptatt av $totalt egne runnere opptatt" >> "$GITHUB_STEP_SUMMARY"
