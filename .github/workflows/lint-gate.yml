@@ -54,7 +54,7 @@ jobs:
   # for at valget skal kunne se køen; uten det brukes GitHub sine runnere. Se velg-runner.yml.
   runner:
     name: Velg runner
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@frank/runner-fallback
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@main
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
