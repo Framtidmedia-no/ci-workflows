@@ -54,7 +54,21 @@ jobs:
           tall=$(gh api "orgs/Framtidmedia-no/actions/runners?per_page=100" \
             --jq '[.runners[] | select(.status == "online") | select(any(.labels[]; .name == "framtid-ci"))] | "\(([.[] | select(.busy)] | length)) \(length)"')
           opptatt=${tall% *}; totalt=${tall#* }
+          # Timeren ci-runner-status på framtid-fs-worker skriver tallet hvert 30. sekund (GR-664). Er
+          # tidsstempelet vi finner her eldre enn VAKT_SEK, har timeren stoppet. Vi skriver likevel
+          # (denne jobben er sikkerhetsnettet), men feiler til slutt, så GitHub varsler.
+          VAKT_SEK=300
+          forrige=$(gh api orgs/Framtidmedia-no/actions/variables/CI_RUNNER_STATUS --jq .value 2>/dev/null || true)
+          forrige_tid=${forrige##*,}
           verdi="$opptatt,$totalt,$(date +%s)"
           gh variable set CI_RUNNER_STATUS --org Framtidmedia-no --visibility all --body "$verdi"
           echo "CI_RUNNER_STATUS = $verdi"
           echo "**Runner-status:** $opptatt av $totalt egne runnere opptatt" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$forrige_tid" =~ ^[0-9]{9,12}$ ]]; then
+            alder=$(( $(date +%s) - forrige_tid ))
+            if [ "$alder" -gt "$VAKT_SEK" ]; then
+              echo "::error::CI_RUNNER_STATUS var $alder s gammel. Timeren ci-runner-status på framtid-fs-worker har stoppet. Sjekk: ssh root@framtid-fs-worker 'systemctl status ci-runner-status.timer ci-runner-status.service; journalctl -u ci-runner-status -n 20'"
+              echo "**Timeren ci-runner-status er stille** ($alder s siden forrige skriving)." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
