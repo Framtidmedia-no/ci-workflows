@@ -5,7 +5,9 @@
 # abonnementet) i stedet for å stå i kø. Uten CI_RUNS_ON kjører alt på ubuntu-latest.
 #
 # Signal 1 (alle repoer): runner-status.yml publiserer hvor mange egne runnere som er opptatt (CI_RUNNER_STATUS).
-# Er alle opptatt og tallet er under 8 minutter gammelt, går kjøringen til GitHub.
+# Er alle opptatt og tallet er under 25 minutter gammelt, går kjøringen til GitHub. GitHub kjører
+# cron-jobben sjeldnere enn hvert 5. minutt (målt 13-22 min mellom kjøringer 13. okt. 2026), så en
+# grense på 8 minutter gjorde signalet utløpt mesteparten av tiden (GR-664).
 # Signal 2: jobber i det kallende repoet på self-hosted akkurat nå. Står EN jobb i kø, er alle
 # runnerne opptatt, og kjøringen går til GitHub. Uten kø brukes terskelen (sum av kjørende jobber). Last fra ANDRE repoer på de samme runnerne
 # ser vi ikke herfra (github.token har ikke org-tilgang). Feiler oppslaget, velges ubuntu-latest.
@@ -20,7 +22,7 @@
 #       runs-on: ${{ fromJSON(needs.runner.outputs.etiketter) }}
 #
 # Kallende jobb må ha `permissions: { actions: read, contents: read }`.
-# Variabler i kallende repo: CI_RUNS_ON, CI_OVERLOP_TERSKEL (standard 8 av 9 runnere).
+# Variabler i kallende repo: CI_RUNS_ON, CI_OVERLOP_TERSKEL (standard 12 av 14 runnere, fordelt på framtid-ci-2 og framtid-ci-3).
 name: Velg runner
 
 on:
@@ -54,13 +56,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ vars.CI_RUNS_ON }}
           GITHUB_VALG: ${{ inputs.github-etiketter }}
-          TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '8' }}
+          TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '12' }}
           # Organisasjonsvariabel fra runner-status.yml: «opptatt,totalt,tidsstempel». Gjelder alle repoer.
           STATUS: ${{ vars.CI_RUNNER_STATUS }}
         run: |
           valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
-          # Sentral status (alle repoer): fersk (maks 8 min, så egne runnere brukes først) og alle egne runnere opptatt.
+          # Sentral status (alle repoer): fersk (maks 25 min, se toppen) og alle egne runnere opptatt.
           opptatt_sentralt=0; totalt_sentralt=0; alder_sentralt=999999
           # Bare «tall,tall,tall» godtas, så verdien aldri kan tolkes som kode i aritmetikken under.
           if [[ "$STATUS" =~ ^[0-9]{1,4},[0-9]{1,4},[0-9]{1,12}$ ]]; then
@@ -68,7 +70,7 @@ jobs:
             alder_sentralt=$(( $(date +%s) - ${tid_sentralt:-0} ))
           fi
           sentralt_fullt() {
-            [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 480 ]
+            [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 1500 ]
           }
           if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             belastning=0
