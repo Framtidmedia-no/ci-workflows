@@ -24,7 +24,8 @@
 #       runs-on: ${{ fromJSON(needs.runner.outputs.etiketter) }}
 #
 # Kallende jobb må ha `permissions: { actions: read, contents: read }`.
-# Variabler i kallende repo: CI_RUNS_ON, CI_OVERLOP_TERSKEL (standard 12 av 14 runnere, fordelt på framtid-ci-2 og framtid-ci-3).
+# Variabler i kallende repo: CI_RUNS_ON, CI_ALDRI_OVERLOP (true = aldri overløp til GitHub, jobbene står i kø på egne runnere;
+# bruk på repoer med tung, parallell CI der betalte minutter ellers løper løpsk), CI_OVERLOP_TERSKEL (standard 12 av 14 runnere, fordelt på framtid-ci-2 og framtid-ci-3).
 name: Velg runner
 
 on:
@@ -61,6 +62,8 @@ jobs:
           TERSKEL: ${{ vars.CI_OVERLOP_TERSKEL || '12' }}
           # Organisasjonsvariabel fra runner-status.yml: «opptatt,totalt,tidsstempel». Gjelder alle repoer.
           STATUS: ${{ vars.CI_RUNNER_STATUS }}
+          # Repo-variabel CI_ALDRI_OVERLOP=true: aldri send kjøringen til GitHub fordi egne runnere er opptatt. Jobbene står i kø i stedet.
+          ALDRI_OVERLOP: ${{ vars.CI_ALDRI_OVERLOP }}
         run: |
           valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
@@ -74,7 +77,11 @@ jobs:
           sentralt_fullt() {
             [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 180 ]
           }
-          if [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
+          if [ "$ALDRI_OVERLOP" = "true" ] && [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
+            # Kø er gratis, GitHub-minutter er ikke det: la jobbene vente på egne runnere uansett hvor travelt det er.
+            valg="$BASE"
+            grunn="CI_ALDRI_OVERLOP=true: venter i kø på egne runnere, sender aldri til GitHub fordi de er opptatt"
+          elif [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             belastning=0
             ko=0
             ok=1
