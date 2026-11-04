@@ -31,6 +31,39 @@ Valgfrie `with:`-inputs: `node-version` (default 24, brukes bare uten `.nvmrc`),
 Pakkebehandler oppdages fra lockfila. Repoer uten ESLint installert får en notice og porten hopper over.
 Krasjer ESLint på PR-en (ugyldig config, manglende plugin) feiler porten — det er en reell feil.
 
+## sikkerhet.yml — hemmeligheter og avhengighetsvarsler (FRA-1753)
+
+Basis-nivået i sikkerhetsstandarden. To jobber:
+
+1. **gitleaks** (CLI, låst versjon med verifisert sjekksum, ikke `gitleaks-action` som krever lisens for org). Skanner bare
+   commits i PR-området (`base..HEAD`), så gammel historikk gjør ikke nye PR-er røde. Offentlige klientnøkler
+   (`NEXT_PUBLIC_*`/`VITE_*`/`EXPO_PUBLIC_*`, anon-nøkler, `sb_publishable_*`, Sentry DSN, Stripe publishable) gir ikke falsk
+   positiv; `service_role`-nøkler og andre hemmeligheter stopper PR-en.
+2. **audit** (`pnpm audit`/`npm audit`, high og over) som advarsel. `fail-on-audit: true` gjør den til feil.
+
+Feilhåndtering er bevisst asymmetrisk: funn, ugyldig konfig og krasj gir rødt; **feil sjekksum gir rødt** (aldri fail-open mot en
+manipulert binær); en nedlasting som feiler pga. nett gir advarsel og hopper over, ellers kunne et nettverkshikk låse alle merger.
+
+Repoets egen `.gitleaks.toml` er valgfri og kjedes inn for repo-spesifikke unntak. Den **må** ha `[extend] useDefault = true`,
+ellers feiler jobben (ellers ville skanningen stille mistet alle standardregler).
+
+```yaml
+name: Sikkerhet
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+jobs:
+  sikkerhet:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/sikkerhet.yml@<sha>
+    permissions:
+      contents: read
+```
+
+Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleaks-config`, `fail-on-audit`. Selvtest:
+`bash tests/sikkerhet.test.sh` (lokalt med `GITLEAKS_BIN=...`, i CI også nedlasting og sjekksum).
+Oppgradering av gitleaks: ny versjon + begge sjekksummer i `env:`, kjør selvtesten.
+
 ## ssrf-drift.yml — SSRF-guard er lik kanonisk (FRA-976)
 
 Feiler hvis den genererte `src/lib/net/ssrf.ts` mangler, er redigert for hånd eller er utdatert mot
