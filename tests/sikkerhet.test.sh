@@ -35,9 +35,9 @@ if [ -z "${GITLEAKS_BIN:-}" ]; then
   echo "== Installasjon"
   forvent "låst versjon med riktig sjekksum" 0 bash "$TMP/installer.sh"
   grep -q "installert=true" "$GITHUB_OUTPUT" || feil "installert=true ble ikke satt"
-  export GITLEAKS_BIN="$RUNNER_TEMP/gitleaks/gitleaks"
-  [ "$("$GITLEAKS_BIN" version)" = "$GITLEAKS_VERSION" ] || feil "feil versjon installert"
-  rm -rf "$RUNNER_TEMP/gitleaks"
+  [ "$("$RUNNER_TEMP/gitleaks/gitleaks" version)" = "$GITLEAKS_VERSION" ] || feil "feil versjon installert"
+  mkdir -p "$TMP/bin"; cp "$RUNNER_TEMP/gitleaks/gitleaks" "$TMP/bin/gitleaks"; export GITLEAKS_BIN="$TMP/bin/gitleaks"
+  rm -rf "$RUNNER_TEMP/gitleaks"   # ny, tom installasjon for de neste testene (binæren brukes fra $TMP/bin)
   forvent "feil sjekksum stopper (aldri fail-open)" 1 env GITLEAKS_SHA256_X64=0000000000000000000000000000000000000000000000000000000000000000 GITLEAKS_SHA256_ARM64=0000000000000000000000000000000000000000000000000000000000000000 bash "$TMP/installer.sh"
   : > "$GITHUB_OUTPUT"
   forvent "nedlastingsfeil gir advarsel og hopper over, ikke rød" 0 env GITLEAKS_BASE_URL=http://127.0.0.1:9 bash "$TMP/installer.sh"
