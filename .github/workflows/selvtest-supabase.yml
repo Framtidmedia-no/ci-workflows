@@ -1,0 +1,35 @@
+name: Selvtest supabase-test
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/supabase-test.yml'
+      - '.github/workflows/selvtest-supabase.yml'
+      - 'sql-guard.json'
+      - 'tests/supabase-drift.test.sh'
+      - 'tests/fixtures/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/supabase-test.yml'
+      - 'sql-guard.json'
+      - 'tests/fixtures/**'
+permissions:
+  contents: read
+jobs:
+  drift-logikk:
+    name: drift-jobben fanger håndredigert, manglende og utdatert
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: bash tests/supabase-drift.test.sh
+  grønn-fixture:
+    name: hele workflowen mot grønn fixture
+    uses: ./.github/workflows/supabase-test.yml
+    with:
+      working-directory: tests/fixtures/gronn
+      guard-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read

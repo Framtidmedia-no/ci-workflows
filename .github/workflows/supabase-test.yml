@@ -1,0 +1,112 @@
+# Kundedata-nivået i sikkerhetsstandarden (FRA-1754): pgTAP-testene og skjema-lint som påkrevd PR-sjekk.
+#
+# To jobber:
+#   drift   De synkede universelle testene (supabase/tests/database/0N-*.test.sql) er lik kanonisk kilde
+#           (framtid-security/sql/tests), via sql-guard.json i dette repoet. Feiler hvis en test mangler, er
+#           redigert for hånd eller er utdatert. Samme mønster som ssrf-drift.yml.
+#   pgtap   Starter lokal Supabase (migrasjonene kjøres fra scratch, så jobben fanger også migrasjoner som
+#           ikke lar seg kjøre), `supabase db lint --fail-on error` og `supabase test db`.
+#
+# Security Advisor er bevisst IKKE en PR-gate (den trenger prosjektet i skyen). Den kjøres ved utrulling og ukentlig.
+#
+# Kall fra et repo (.github/workflows/supabase-test.yml):
+#   name: Supabase-test
+#   on:
+#     pull_request:
+#   jobs:
+#     supabase-test:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/supabase-test.yml@<sha>
+#       permissions:
+#         contents: read
+name: Supabase-test
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Katalogen som inneholder supabase/ (monorepo-app)
+        type: string
+        default: '.'
+      runs-on:
+        description: 'JSON for runs-on, f.eks. "ubuntu-latest" eller output fra velg-runner.yml'
+        type: string
+        default: '"ubuntu-latest"'
+      supabase-version:
+        description: Versjon av Supabase CLI
+        type: string
+        default: '2.115.0'
+      guard-ref:
+        description: Ref i ci-workflows som sql-guard.json hentes fra (selvtesten bruker PR-ens commit)
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: SQL-testene er lik kanonisk (framtid-security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Sammenlign mot sql-guard.json
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          GUARD_REF: ${{ inputs.guard-ref }}
+        run: |
+          # >>> drift
+          set -euo pipefail
+          guard="${SQL_GUARD_FILE:-$RUNNER_TEMP/sql-guard.json}"
+          if [ -z "${SQL_GUARD_FILE:-}" ]; then
+            curl -fsSL --retry 3 https://raw.githubusercontent.com/Framtidmedia-no/ci-workflows/${GUARD_REF}/sql-guard.json -o "$guard"
+          fi
+          TEST_DIR="$WORKDIR/supabase/tests/database" GUARD_FILE="$guard" node <<'NODE'
+          const { createHash } = require('node:crypto')
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const MARKOR = '-- ---- framtid-security:start ----'
+          const LINJE2 = '-- Endringer gjøres i Framtidmedia-no/framtid-security (sql/tests) og synkes med scripts/sync-sql.mjs.'
+          const FORSTE = /^-- GENERERT – ikke rediger\. Kilde: framtid-security@(\S+) \((\S+\.test\.sql), sha256: ([0-9a-f]{64})\)$/
+          const manifest = JSON.parse(fs.readFileSync(process.env.GUARD_FILE, 'utf8')).tester
+          const feil = []
+          for (const [navn, forventet] of Object.entries(manifest)) {
+            const sti = path.join(process.env.TEST_DIR, navn)
+            if (!fs.existsSync(sti)) { feil.push(`${navn}: mangler`); continue }
+            const tekst = fs.readFileSync(sti, 'utf8')
+            const idx = tekst.indexOf(`${MARKOR}\n`)
+            const linjer = idx < 0 ? [] : tekst.slice(0, idx).split('\n')
+            const m = linjer.length === 3 && linjer[2] === '' && linjer[1] === LINJE2 ? FORSTE.exec(linjer[0]) : null
+            if (!m || m[2] !== navn) { feil.push(`${navn}: ikke en generert fil (kjør sync-sql.mjs i framtid-security)`); continue }
+            const innhold = tekst.slice(idx + MARKOR.length + 1)
+            if (createHash('sha256').update(innhold).digest('hex') !== m[3]) feil.push(`${navn}: redigert for hånd`)
+            else if (m[3] !== forventet) feil.push(`${navn}: utdatert mot kilden (kjør sync-sql.mjs på nytt)`)
+          }
+          if (feil.length) { for (const f of feil) console.error(`::error::${f}`); process.exit(1) }
+          console.log(`OK: ${Object.keys(manifest).length} tester er lik kanonisk`)
+          NODE
+          # <<< drift
+
+  pgtap:
+    name: Supabase pgTAP og lint
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      # supabase/setup-cli v3.0.1, pinnet til commit-SHA
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359
+        with:
+          version: ${{ inputs.supabase-version }}
+      - name: Start lokal Supabase
+        run: supabase start -x studio,imgproxy,vector,edge-runtime
+      - name: Skjema-lint (feil stopper)
+        run: supabase db lint --local --fail-on error
+      - name: pgTAP
+        run: supabase test db

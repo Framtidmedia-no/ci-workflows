@@ -1,0 +1,10 @@
+{
+  "tester": {
+    "00-rls-paa-alle-tabeller.test.sql": "9526034d8dfbf23668d300f9a76aeafdaa8dc38f7e496747a3163e8f21ad7137",
+    "01-anon-kun-allowlist.test.sql": "ee3eac9b8bde06bf53f40139f5313cb1682a9dadd8f41917da6292729d5b6205",
+    "02-ingen-using-true.test.sql": "fd0c6be24b2a4a8e7edceeda79d9417b86d8694f13831055c0604e1c4c18bd15",
+    "03-anon-ingen-skriv.test.sql": "77fe7f0c647c4af33ef79ab8c3375373544f2c33a94468d5a48a834cb3a55bda",
+    "04-security-definer-search-path.test.sql": "bc685c8abb051444da5f379b96461b3caf30c2372c16a28484a7a14be80e98c8",
+    "05-views-security-invoker.test.sql": "8e3ba0729d83382243e035700be13182e2ce695b7efb5da0a886555706599aab"
+  }
+}
