@@ -59,6 +59,14 @@ forvent "ren commit" 0 skann "$MELLOM"
 printf 'NEXT_PUBLIC_SUPABASE_ANON_KEY=%s\nNEXT_PUBLIC_SENTRY_DSN=https://%s@o123.ingest.sentry.io/456\n' "$(jwt anon)" "$(openssl rand -hex 16)" > .env.example
 git add -A; git commit -qm offentlige
 forvent "offentlige klientnøkler (anon JWT, Sentry DSN) gir ikke falsk positiv" 0 skann "$MELLOM"
+# Omgåelsesforsøk: unntakene skal ikke kunne skjule en hemmelighet bare fordi linja nevner en offentlig nøkkel.
+PUBBASE=$(git rev-parse HEAD)
+echo "# anon key, se docs: ghp_$(openssl rand -hex 18)" > omga1.txt; git add -A; git commit -qm omga1
+forvent "ordet 'anon key' i en kommentar skjuler ikke en token på samme linje" 1 skann "$PUBBASE"
+git rm -q omga1.txt; git commit -qm rm1; PUBBASE=$(git rev-parse HEAD)
+echo "const t = \"ghp_$(openssl rand -hex 18)\"; // NEXT_PUBLIC_X=1" > omga2.js; git add -A; git commit -qm omga2
+forvent "NEXT_PUBLIC_-navn midt på linja skjuler ikke en token" 1 skann "$PUBBASE"
+git rm -q omga2.js; git commit -qm rm2
 echo "SUPABASE_SERVICE_ROLE_KEY=$(jwt service_role)" > .env.prod; git add -A; git commit -qm service
 forvent "service_role-nøkkel stopper PR-en" 1 skann "$MELLOM"
 git rm -q .env.prod; git commit -qm fjern2

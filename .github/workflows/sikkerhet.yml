@@ -2,7 +2,7 @@
 #
 # gitleaks kjøres som CLI med låst versjon og verifisert sjekksum (gitleaks-action krever lisens for
 # org-kontoer, og en action er en ekstra avhengighet). Bare commits i PR-området skannes, så gammel
-# historikk gjør ikke nye PR-er røde. Offentlige klientnøkler (NEXT_PUBLIC_*/VITE_*/EXPO_PUBLIC_*,
+# historikk gjør ikke nye PR-er røde. Offentlige klientnøkler (NEXT_PUBLIC_*/VITE_*/EXPO_PUBLIC_*-tildelinger,
 # anon-nøkler, sb_publishable_*, Sentry DSN, Stripe publishable) gir ikke falsk positiv, mens
 # service_role-nøkler og andre hemmeligheter stopper PR-en.
 #
@@ -117,17 +117,26 @@ jobs:
           {
             printf 'title = "Framtid basis"\n\n[extend]\n%s\n\n' "$extend"
             cat <<'TOML'
-          # Offentlige klientnøkler: en NEXT_PUBLIC_/VITE_/EXPO_PUBLIC_-variabel havner i klientbunten, så en
-          # hemmelighet på en slik linje er allerede offentlig. Navn på service_role-/secret-nøkler matcher ikke.
+          # Offentlige klientnøkler. Variabelnavn-unntaket er FORANKRET til starten av en tildeling, så et ord som
+          # «anon key» i en kommentar, eller et NEXT_PUBLIC_-navn midt på linja, ikke skjuler en hemmelighet på samme linje.
+          # Navn på service_role-/secret-nøkler matcher ikke. Unntaket gjelder hele tildelingslinja, så ikke legg to
+          # verdier på én linje.
           [[allowlists]]
-          description = "Offentlige klientnøkler (anon/publishable, Sentry DSN, Stripe publishable)"
+          description = "Offentlige klientnøkler i env-tildelinger (NEXT_PUBLIC_/VITE_/EXPO_PUBLIC_, anon-nøkkel)"
           regexTarget = "line"
           regexes = [
-            '''(?i)\b(NEXT_PUBLIC|VITE|EXPO_PUBLIC)_[A-Z0-9_]*\s*[=:]''',
-            '''(?i)\banon[_-]?key\b''',
-            '''\bsb_publishable_[A-Za-z0-9_-]+''',
+            '''(?i)^\s*(export\s+)?((const|let|var)\s+)?["']?(NEXT_PUBLIC|VITE|EXPO_PUBLIC)_[A-Z0-9_]*["']?\s*[=:]''',
+            '''(?i)^\s*(export\s+)?((const|let|var)\s+)?["']?[A-Z0-9_]*ANON_?KEY["']?\s*[=:]''',
+          ]
+
+          # Verdier som er offentlige av design, matchet på selve verdien og ikke på linja rundt.
+          [[allowlists]]
+          description = "Publishable-nøkler og Sentry DSN"
+          regexTarget = "match"
+          regexes = [
+            '''sb_publishable_[A-Za-z0-9_-]+''',
             '''https://[0-9a-f]{16,}@[a-z0-9.-]*sentry\.io/[0-9]+''',
-            '''\bpk_(live|test)_[A-Za-z0-9]{16,}''',
+            '''pk_(live|test)_[A-Za-z0-9]{16,}''',
           ]
           TOML
           } > "$konfig"
