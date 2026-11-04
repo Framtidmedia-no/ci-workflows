@@ -1,0 +1,7 @@
+project_id = "fixture-gronn"
+
+[db]
+major_version = 17
+
+[analytics]
+enabled = false

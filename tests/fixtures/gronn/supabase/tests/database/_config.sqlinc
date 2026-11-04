@@ -1,0 +1,16 @@
+-- Prosjektspesifikk konfig for sikkerhetstestene. Kopieres til supabase/tests/database/_config.sqlinc
+-- ÉN gang og eies av prosjektet. Synkes ikke og overskrives aldri av sync-sql.mjs.
+-- Filen har ikke .sql-endelse med vilje: `supabase test db` kjører alle *.sql som tester.
+-- Hver rad skal ha en kommentar som sier HVORFOR unntaket finnes og hvem som godkjente det.
+
+create temp table if not exists tests_rls_unntak (tabell text primary key);
+create temp table if not exists tests_anon_funksjon_allowlist (funksjon text primary key);
+create temp table if not exists tests_using_true_unntak (tabell text, kommando text, primary key (tabell, kommando)); -- kommando: SELECT, INSERT, UPDATE, DELETE eller ALL
+create temp table if not exists tests_view_unntak (visning text primary key);
+create temp table if not exists tests_anon_skriv_unntak (tabell text primary key);
+
+-- Eksempler (fjern kommentartegnet og tilpass):
+-- insert into tests_anon_funksjon_allowlist values ('public.er_epost_tilgjengelig(text)') on conflict do nothing; -- kalles før innlogging, godkjent <dato>
+-- insert into tests_using_true_unntak values ('kategorier', 'SELECT') on conflict do nothing; -- offentlig oppslagstabell
+-- insert into tests_anon_skriv_unntak values ('kontaktskjema') on conflict do nothing; -- anon INSERT, begrenset av policy
+-- insert into tests_view_unntak values ('offentlig_oversikt') on conflict do nothing; -- view uten security_invoker, godkjent <dato> fordi ...

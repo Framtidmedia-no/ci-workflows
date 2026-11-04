@@ -64,6 +64,33 @@ Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleak
 `bash tests/sikkerhet.test.sh` (lokalt med `GITLEAKS_BIN=...`, i CI også nedlasting og sjekksum).
 Oppgradering av gitleaks: ny versjon + begge sjekksummer i `env:`, kjør selvtesten.
 
+## supabase-test.yml — pgTAP og skjema-lint (FRA-1754)
+
+Kundedata-nivået i sikkerhetsstandarden, som påkrevd PR-sjekk i repoer med Supabase og brukerdata. To jobber:
+
+1. **drift:** de synkede universelle testene (`supabase/tests/database/0N-*.test.sql`) er like kanonisk kilde
+   ([framtid-security](https://github.com/Framtidmedia-no/framtid-security), `sql/tests`) via `sql-guard.json`
+   (sha256 per test, bumpes sammen med testene). Feiler hvis en test mangler, er håndredigert eller utdatert.
+2. **pgtap:** `supabase start`, `supabase db lint --local --fail-on error` og `supabase test db`. Migrasjonene kjøres fra
+   scratch, så jobben fanger også migrasjoner som ikke lar seg kjøre.
+
+Security Advisor er bevisst ikke en PR-gate (den krever prosjektet i skyen); den kjøres ved utrulling og ukentlig.
+
+```yaml
+name: Supabase-test
+on:
+  pull_request:
+jobs:
+  supabase-test:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/supabase-test.yml@<sha>
+    permissions:
+      contents: read
+```
+
+Valgfrie inputs: `working-directory` (monorepo), `runs-on` (JSON), `supabase-version` (standard 2.115.0), `guard-ref`.
+Når testene i framtid-security endres: `node scripts/sync-sql.mjs --manifest > sql-guard.json` her (PR mot dette repoet), ellers
+feiler framtid-security sin CI. Selvtest: `bash tests/supabase-drift.test.sh` og en egen workflow som kjører hele jobben mot en grønn fixture.
+
 ## ssrf-drift.yml — SSRF-guard er lik kanonisk (FRA-976)
 
 Feiler hvis den genererte `src/lib/net/ssrf.ts` mangler, er redigert for hånd eller er utdatert mot
