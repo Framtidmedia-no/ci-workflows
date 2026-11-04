@@ -1,0 +1,24 @@
+name: Selvtest sikkerhet
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/sikkerhet.yml'
+      - '.github/workflows/selvtest-sikkerhet.yml'
+      - 'tests/sikkerhet.test.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sikkerhet.yml'
+      - 'tests/sikkerhet.test.sh'
+permissions:
+  contents: read
+jobs:
+  sikkerhet:
+    name: sikkerhet.yml fanger hemmeligheter og feiler riktig
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: bash tests/sikkerhet.test.sh

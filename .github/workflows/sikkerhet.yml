@@ -1,0 +1,180 @@
+# Felles sikkerhetsport for Basis-nivået (FRA-1753): hemmeligheter i nye commits og avhengighetsvarsler.
+#
+# gitleaks kjøres som CLI med låst versjon og verifisert sjekksum (gitleaks-action krever lisens for
+# org-kontoer, og en action er en ekstra avhengighet). Bare commits i PR-området skannes, så gammel
+# historikk gjør ikke nye PR-er røde. Offentlige klientnøkler (NEXT_PUBLIC_*/VITE_*/EXPO_PUBLIC_*,
+# anon-nøkler, sb_publishable_*, Sentry DSN, Stripe publishable) gir ikke falsk positiv, mens
+# service_role-nøkler og andre hemmeligheter stopper PR-en.
+#
+# Feilhåndtering (bevisst asymmetrisk):
+#   funn                         -> rød
+#   ugyldig .gitleaks.toml/krasj -> rød (verktøyfeil skal ikke se ut som grønn skanning)
+#   sjekksum stemmer ikke        -> rød (aldri fail-open mot manipulert binær)
+#   nedlasting feiler (nett)     -> advarsel og hopp over, ellers kunne et nettverkshikk låse alle merger
+#
+# Repoets egen .gitleaks.toml er valgfri. Finnes den, kjedes den inn og MÅ ha `[extend] useDefault = true`
+# (ellers ville skanningen stille mistet alle standardregler). Brukes bare til repo-spesifikke unntak.
+#
+# Kall fra et repo (.github/workflows/sikkerhet.yml):
+#   name: Sikkerhet
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main, dev]
+#   jobs:
+#     sikkerhet:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/sikkerhet.yml@<sha>
+#       permissions:
+#         contents: read
+#
+# Repoet er offentlig: ingen hemmeligheter eller prosjektspesifikke verdier skal ligge her.
+name: Sikkerhet
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON for runs-on, f.eks. "ubuntu-latest" eller output fra velg-runner.yml'
+        type: string
+        default: '"ubuntu-latest"'
+      gitleaks-config:
+        description: Sti til repoets egen gitleaks-konfig (valgfri)
+        type: string
+        default: .gitleaks.toml
+      fail-on-audit:
+        description: Gjør audit av avhengigheter til en feil i stedet for advarsel
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Låst versjon. Sjekksummene er målt mot nedlastede filer og de publiserte checksums (04.11.2026).
+  GITLEAKS_VERSION: '8.30.1'
+  GITLEAKS_SHA256_X64: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+  GITLEAKS_SHA256_ARM64: 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080'
+
+jobs:
+  gitleaks:
+    name: Hemmeligheter (gitleaks)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Installer gitleaks (låst versjon og sjekksum)
+        id: install
+        run: |
+          # >>> installer
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) a=linux_x64; sha="$GITLEAKS_SHA256_X64" ;;
+            aarch64|arm64) a=linux_arm64; sha="$GITLEAKS_SHA256_ARM64" ;;
+            *) echo "::error::Ukjent arkitektur $(uname -m)"; exit 1 ;;
+          esac
+          fil="gitleaks_${GITLEAKS_VERSION}_${a}.tar.gz"
+          mappe="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$mappe"
+          base="${GITLEAKS_BASE_URL:-https://github.com/gitleaks/gitleaks/releases/download}"
+          if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 -o "$mappe/$fil" "$base/v${GITLEAKS_VERSION}/$fil"; then
+            echo "::warning::Kunne ikke laste ned gitleaks. Skanningen hoppes over denne kjøringen (nettverksfeil, ikke funn)."
+            echo "installert=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if command -v sha256sum >/dev/null; then sjekk() { sha256sum -c -; }; else sjekk() { shasum -a 256 -c -; }; fi
+          if ! echo "$sha  $mappe/$fil" | sjekk; then
+            echo "::error::Sjekksummen for gitleaks stemmer ikke. Stopper i stedet for å kjøre en uverifisert binær."
+            exit 1
+          fi
+          tar -xzf "$mappe/$fil" -C "$mappe" gitleaks
+          echo "installert=true" >> "$GITHUB_OUTPUT"
+          # <<< installer
+
+      - name: Skann nye commits
+        if: steps.install.outputs.installert == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          KONFIG_REPO: ${{ inputs.gitleaks-config }}
+        run: |
+          # >>> skann
+          set -uo pipefail
+          bin="${GITLEAKS_BIN:-$RUNNER_TEMP/gitleaks/gitleaks}"
+          konfig="$RUNNER_TEMP/gitleaks-grunn.toml"
+          extend='useDefault = true'
+          if [ -f "$KONFIG_REPO" ]; then
+            if ! grep -Eq '^\s*useDefault\s*=\s*true' "$KONFIG_REPO"; then
+              echo "::error file=$KONFIG_REPO::$KONFIG_REPO må ha [extend] useDefault = true, ellers mister skanningen alle standardregler."
+              exit 1
+            fi
+            extend="path = \"$(pwd)/$KONFIG_REPO\""
+          fi
+          {
+            printf 'title = "Framtid basis"\n\n[extend]\n%s\n\n' "$extend"
+            cat <<'TOML'
+          # Offentlige klientnøkler: en NEXT_PUBLIC_/VITE_/EXPO_PUBLIC_-variabel havner i klientbunten, så en
+          # hemmelighet på en slik linje er allerede offentlig. Navn på service_role-/secret-nøkler matcher ikke.
+          [[allowlists]]
+          description = "Offentlige klientnøkler (anon/publishable, Sentry DSN, Stripe publishable)"
+          regexTarget = "line"
+          regexes = [
+            '''(?i)\b(NEXT_PUBLIC|VITE|EXPO_PUBLIC)_[A-Z0-9_]*\s*[=:]''',
+            '''(?i)\banon[_-]?key\b''',
+            '''\bsb_publishable_[A-Za-z0-9_-]+''',
+            '''https://[0-9a-f]{16,}@[a-z0-9.-]*sentry\.io/[0-9]+''',
+            '''\bpk_(live|test)_[A-Za-z0-9]{16,}''',
+          ]
+          TOML
+          } > "$konfig"
+
+          zero=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            pull_request|pull_request_target) logopts="${BASE_SHA}..HEAD" ;;
+            push)
+              if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "$zero" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+                logopts="-1"   # ny gren: PR-skanningen tar resten, her sjekkes siste commit
+              else
+                logopts="${BEFORE_SHA}..HEAD"
+              fi ;;
+            *) logopts="-n 50" ;;
+          esac
+          echo "Skanner: $logopts"
+          "$bin" git --config "$konfig" --log-opts "$logopts" --exit-code 2 --redact --no-banner --no-color .
+          rc=$?
+          case "$rc" in
+            0) echo "Ingen hemmeligheter funnet." ;;
+            2) echo "::error::gitleaks fant hemmeligheter i commitene over. Roter nøkkelen FØRST (den kan være live), fjern den fra treet, og husk at git-historikken fortsatt inneholder den."; exit 1 ;;
+            *) echo "::error::gitleaks feilet (exit $rc): verktøyfeil eller ugyldig konfig. Dette er ikke en grønn skanning."; exit 1 ;;
+          esac
+          # <<< skann
+
+  audit:
+    name: Avhengigheter (audit)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Audit av produksjonsavhengigheter
+        env:
+          FAIL_ON_AUDIT: ${{ inputs.fail-on-audit }}
+        run: |
+          rc=0
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable >/dev/null 2>&1 || true
+            pnpm audit --audit-level high --prod || rc=$?
+          elif [ -f package-lock.json ]; then
+            npm audit --audit-level=high --omit=dev || rc=$?
+          else
+            echo "Ingen pnpm-lock.yaml eller package-lock.json: ingenting å auditere."
+          fi
+          if [ "$rc" != 0 ]; then
+            if [ "$FAIL_ON_AUDIT" = "true" ]; then echo "::error::Audit fant alvorlige sårbarheter (high/critical)."; exit "$rc"; fi
+            echo "::warning::Audit fant alvorlige sårbarheter (high/critical). Advarsel, ikke feil. Renovate tar oppdateringene; alvorlige funn følges opp i Linear."
+          fi
