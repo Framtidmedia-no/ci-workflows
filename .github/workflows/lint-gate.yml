@@ -54,7 +54,7 @@ jobs:
   # for at valget skal kunne se køen; uten det brukes GitHub sine runnere. Se velg-runner.yml.
   runner:
     name: Velg runner
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@main
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@3398ce4b1f95faef89b3dca562afd9cde9c95e7c # main
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
@@ -64,7 +64,7 @@ jobs:
     env:
       WD: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -93,20 +93,20 @@ jobs:
 
       - name: Sett opp pnpm
         if: steps.pm.outputs.pm == 'pnpm'
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: ${{ steps.pm.outputs.pnpm-version }}
 
       - name: Sett opp Node (versjonsfil)
         if: steps.pm.outputs.node-file != ''
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: ${{ steps.pm.outputs.node-file }}
           cache: ${{ steps.pm.outputs.pm }}
 
       - name: Sett opp Node (input)
         if: steps.pm.outputs.node-file == ''
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ inputs.node-version }}
           cache: ${{ steps.pm.outputs.pm }}
