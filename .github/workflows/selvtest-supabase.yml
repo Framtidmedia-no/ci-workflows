@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
       - run: bash tests/supabase-drift.test.sh
-  grønn-fixture:
+  gronn-fixture:
     name: hele workflowen mot grønn fixture
     uses: ./.github/workflows/supabase-test.yml
     with:
