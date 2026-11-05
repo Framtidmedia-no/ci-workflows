@@ -71,7 +71,21 @@ jobs:
       contents: read
 ```
 
-Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleaks-config`, `fail-on-audit`. Selvtest:
+Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleaks-config`, `fail-on-audit`,
+`full-historikk` (standard av, FRA-1765): skanner alle brancher og tagger i stedet for PR-området og hopper over audit.
+Kall den fra en egen planlagt workflow (ukentlig); funn i gammel historikk gjør ikke vanlige PR-er røde.
+
+```yaml
+name: Hemmeligheter (full historikk)
+on:
+  schedule: [{ cron: '17 4 * * 1' }]
+  workflow_dispatch:
+jobs:
+  historikk:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/sikkerhet.yml@<sha>
+    with: { full-historikk: true }
+    permissions: { contents: read }
+``` Selvtest:
 `bash tests/sikkerhet.test.sh` (lokalt med `GITLEAKS_BIN=...`, i CI også nedlasting og sjekksum).
 Oppgradering av gitleaks: ny versjon + begge sjekksummer i `env:`, kjør selvtesten.
 
@@ -99,8 +113,36 @@ jobs:
 ```
 
 Valgfrie inputs: `working-directory` (monorepo), `runs-on` (JSON), `supabase-version` (standard 2.115.0), `guard-ref`.
+`sql-guard.json` har to nøkler: `tester` (påkrevd, eldre drift-sjekker leser bare den) og `valgfrie` (f.eks.
+`06-ingen-user-metadata-i-autorisasjon`): sjekkes bare der fila finnes i konsumenten, mangel er ikke en feil.
 Når testene i framtid-security endres: `node scripts/sync-sql.mjs --manifest > sql-guard.json` her (PR mot dette repoet), ellers
 feiler framtid-security sin CI. Selvtest: `bash tests/supabase-drift.test.sh` og en egen workflow som kjører hele jobben mot en grønn fixture.
+
+## supabase-live-drift.yml — drift-sjekk mot live stg/prd (FRA-1765)
+
+pgTAP tester skjemaet bygget fra migrasjonene. Denne kjører de universelle kartleggingsspørringene mot den **ekte**
+databasen via Supabase Management API (kun lesing av kataloger, ingen DB-passord, ingen radinnhold i utskriften), så en ACL
+som er endret manuelt i stg/prd blir fanget. Sjekker: anon default-ACL, anon-kjørbare funksjoner, tabeller uten RLS,
+anon-skriv, `using (true)` og `user_metadata` i autorisasjon. Unntakene gjenbrukes fra prosjektets pgTAP-konfig
+(`supabase/tests/database/_config.sqlinc`) og fra registeret `public.offentlige_tabeller` hvis det finnes.
+
+```yaml
+name: Supabase live-drift
+on:
+  workflow_dispatch:
+  # schedule: [{ cron: '30 3 * * *' }]   # først når kjøringen er grønn og støyfri
+jobs:
+  prd:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/supabase-live-drift.yml@<sha>
+    with: { miljo: prd, project-ref: <ref> }   # eller secret SUPABASE_PROJECT_REF
+    secrets:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}   # Doppler ci, synket til GitHub
+    permissions: { contents: read }
+```
+
+Én jobb per miljø (stg/prd). Valgfrie inputs: `config-file`, `working-directory`, `hopp-over` (kommaseparerte kind), `runs-on`.
+Rødt betyr nye funn: rett opp med en migrasjon, ikke ved å utvide unntakene. Selvtest: `bash tests/live-drift.test.sh`
+(engangs-Postgres bak en falsk Management API) og `selvtest-live-drift.yml`. Aldri kjør selvtesten mot en ekte database.
 
 ## ssrf-drift.yml — SSRF-guard er lik kanonisk (FRA-976)
 

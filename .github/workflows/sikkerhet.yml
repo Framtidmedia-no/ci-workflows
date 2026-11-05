@@ -12,6 +12,19 @@
 #   sjekksum stemmer ikke        -> rød (aldri fail-open mot manipulert binær)
 #   nedlasting feiler (nett)     -> advarsel og hopp over, ellers kunne et nettverkshikk låse alle merger
 #
+# Full historikk (FRA-1765, valgfritt, standard av): `with: full-historikk: true` fra en planlagt workflow skanner alle
+# brancher og tagger, ikke bare PR-området. Hendelsene i PR-skanningen er uendret for repoer som ikke setter den.
+#   name: Hemmeligheter (full historikk)
+#   on:
+#     schedule: [{ cron: '17 4 * * 1' }]   # ukentlig, mandag
+#     workflow_dispatch:
+#   jobs:
+#     historikk:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/sikkerhet.yml@<sha>
+#       with: { full-historikk: true }
+#       permissions: { contents: read }
+# Funn her er som regel gammel historikk: roter verdien først (kan være live), og følg opp i repoet.
+#
 # Repoets egen .gitleaks.toml er valgfri. Finnes den, kjedes den inn og MÅ ha `[extend] useDefault = true`
 # (ellers ville skanningen stille mistet alle standardregler). Brukes bare til repo-spesifikke unntak.
 #
@@ -43,6 +56,10 @@ on:
         default: .gitleaks.toml
       fail-on-audit:
         description: Gjør audit av avhengigheter til en feil i stedet for advarsel
+        type: boolean
+        default: false
+      full-historikk:
+        description: 'Skann HELE historikken (alle brancher og tagger) i stedet for PR-området. Bruk fra en planlagt (ukentlig) workflow; hopper over audit. Standard av.'
         type: boolean
         default: false
 
@@ -101,6 +118,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
           KONFIG_REPO: ${{ inputs.gitleaks-config }}
+          FULL_HISTORIKK: ${{ inputs.full-historikk }}
         run: |
           # >>> skann
           set -uo pipefail
@@ -152,18 +170,21 @@ jobs:
               fi ;;
             *) logopts="-n 50" ;;
           esac
+          # Full historikk (ukentlig, valgfritt): alle brancher og tagger, uavhengig av hendelsen.
+          if [ "${FULL_HISTORIKK:-false}" = "true" ]; then logopts="--all"; fi
           echo "Skanner: $logopts"
           "$bin" git --config "$konfig" --log-opts "$logopts" --exit-code 2 --redact --no-banner --no-color .
           rc=$?
           case "$rc" in
             0) echo "Ingen hemmeligheter funnet." ;;
-            2) echo "::error::gitleaks fant hemmeligheter i commitene over. Roter nøkkelen FØRST (den kan være live), fjern den fra treet, og husk at git-historikken fortsatt inneholder den."; exit 1 ;;
+            2) echo "::error::gitleaks fant hemmeligheter i commitene over. Roter nøkkelen FØRST (den kan være live), fjern den fra treet, og husk at git-historikken fortsatt inneholder den. Funn i full historikk: tell og følg opp per repo, ikke lim verdier inn noe sted."; exit 1 ;;
             *) echo "::error::gitleaks feilet (exit $rc): verktøyfeil eller ugyldig konfig. Dette er ikke en grønn skanning."; exit 1 ;;
           esac
           # <<< skann
 
   audit:
     name: Avhengigheter (audit)
+    if: ${{ !inputs.full-historikk }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:

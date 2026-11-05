@@ -6,5 +6,8 @@
     "03-anon-ingen-skriv.test.sql": "77fe7f0c647c4af33ef79ab8c3375373544f2c33a94468d5a48a834cb3a55bda",
     "04-security-definer-search-path.test.sql": "bc685c8abb051444da5f379b96461b3caf30c2372c16a28484a7a14be80e98c8",
     "05-views-security-invoker.test.sql": "8e3ba0729d83382243e035700be13182e2ce695b7efb5da0a886555706599aab"
+  },
+  "valgfrie": {
+    "06-ingen-user-metadata-i-autorisasjon.test.sql": "633bde9cb5e209f9a3bbfb0d7dfabde9477d13d172eb976391e7d6d500bf0c27"
   }
 }
