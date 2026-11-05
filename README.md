@@ -24,7 +24,18 @@ jobs:
     uses: Framtidmedia-no/ci-workflows/.github/workflows/lint-gate.yml@main
 ```
 
-Valgfrie `with:`-inputs: `node-version` (default 24, brukes bare uten `.nvmrc`), `pnpm-version`
+**Advarsler (opt-in, `maks-advarsler`):** uten input telles ikke advarsler, slik at repoer som ikke har meldt seg på
+oppfører seg som før (også de som kaller `@main`). Med `maks-advarsler: '0'` blir advarsler en del av porten: Port 1 kjører
+`--max-warnings 0` på endrede filer, og Port 2 ratchet-er antall advarsler på hele repoet mot base på samme måte som feil.
+Et repo med gamle advarsler felles dermed ikke av dem, bare av nye. Tallet er maks advarsler i endrede filer.
+
+```yaml
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/lint-gate.yml@<sha>
+    with:
+      maks-advarsler: '0'
+```
+
+Valgfrie `with:`-inputs: `maks-advarsler` (default tom = av), `node-version` (default 24, brukes bare uten `.nvmrc`), `pnpm-version`
 (default 11, brukes bare uten `packageManager`), `eslint-args` (default `.`), `typecheck: true`
 (+ `typecheck-command`) for repoer uten egen CI.
 
