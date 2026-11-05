@@ -1,0 +1,255 @@
+# Drift-sjekk mot en LIVE Supabase-database (FRA-1765, T17 punkt 1).
+#
+# pgTAP (supabase-test.yml) tester skjemaet bygget fra migrasjonene på en lokal stack. Det fanger ikke en ACL
+# eller policy som er endret manuelt i stg/prd. Denne kjører de universelle kartleggingsspørringene mot den
+# ekte databasen via Supabase Management API: kun lesing (kataloger, ingen radinnhold), ingen DB-passord i CI.
+# Mønster fra Mobile-Drift (auth-patterns-drift.yml + scripts/check-auth-patterns.ts).
+#
+# Sjekker (kind i utskriften):
+#   anon_default_acl           standardrettigheter for anon i public for rollen postgres (baseline mangler eller er drevet)
+#   anon_kan_kjore_funksjon    anon har EXECUTE på funksjon i public utenfor allowlisten
+#   rls_av                     tabell i public uten RLS
+#   anon_kan_endre             anon kan skrive til tabell/visning/sekvens i public
+#   using_true                 policy med using (true) / with check (true) utenfor unntakene
+#   user_metadata              policy eller funksjon som leser raw_user_meta_data / user_metadata
+#
+# Unntak GJENBRUKES fra prosjektets pgTAP-konfig (supabase/tests/database/_config.sqlinc), så pgTAP og live-sjekken
+# har én unntaksliste: tests_rls_unntak, tests_anon_funksjon_allowlist, tests_using_true_unntak, tests_anon_skriv_unntak,
+# tests_user_metadata_unntak. Finnes tabellen public.offentlige_tabeller i den live databasen (sql/offentlige-tabeller.sql
+# i framtid-security), regnes hver rad som using(true)-unntak for SELECT. Finnes ikke konfigfila, gjelder ingen unntak.
+#
+# Utskriften har bare skjema- og objektnavn. Feil = rød jobb. Ingen varsel-saker opprettes her; en planlagt kjøring som
+# feiler gir GitHub-varsel til repoets eiere. Hver rad i unntakene skal ha en kommentar om hvorfor og hvem som godkjente det.
+#
+# Kall fra et repo (.github/workflows/supabase-live-drift.yml). Secret-navnene på kallersiden velges fritt; verdiene
+# kommer fra Doppler `ci` (synket til GitHub Actions). Én jobb per miljø:
+#   name: Supabase live-drift
+#   on:
+#     workflow_dispatch:
+#     # schedule: [{ cron: '30 3 * * *' }]   # nattlig, først når kjøringen er grønn og støyfri
+#   jobs:
+#     prd:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/supabase-live-drift.yml@<sha>
+#       with:
+#         miljo: prd
+#         project-ref: <20 tegn ref>          # eller secrets.SUPABASE_PROJECT_REF
+#       secrets:
+#         SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+#       permissions:
+#         contents: read
+#
+# Repoet er offentlig: ingen hemmeligheter eller prosjektspesifikke verdier skal ligge her.
+name: Supabase live-drift
+
+on:
+  workflow_call:
+    inputs:
+      project-ref:
+        description: Supabase-prosjektets ref (20 tegn). Alternativt secret SUPABASE_PROJECT_REF.
+        type: string
+        default: ''
+      miljo:
+        description: Navn på miljøet (stg, prd), kun til utskriften
+        type: string
+        default: prd
+      config-file:
+        description: Prosjektets pgTAP-konfig med unntak, relativt til working-directory (valgfri)
+        type: string
+        default: supabase/tests/database/_config.sqlinc
+      working-directory:
+        description: Katalogen som inneholder supabase/ (monorepo-app)
+        type: string
+        default: '.'
+      hopp-over:
+        description: 'Kommaseparerte kind som ikke skal sjekkes, f.eks. "user_metadata"'
+        type: string
+        default: ''
+      runs-on:
+        description: 'JSON for runs-on, f.eks. "ubuntu-latest" eller output fra velg-runner.yml'
+        type: string
+        default: '"ubuntu-latest"'
+    secrets:
+      SUPABASE_ACCESS_TOKEN:
+        description: Supabase personlig access token (Doppler ci). Kun lesing brukes.
+        required: true
+      SUPABASE_PROJECT_REF:
+        description: Alternativ til input project-ref
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  live-drift:
+    name: Live-drift (${{ inputs.miljo }})
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Kartlegg live-databasen (kun lesing)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          REF_SECRET: ${{ secrets.SUPABASE_PROJECT_REF }}
+          REF_INPUT: ${{ inputs.project-ref }}
+          MILJO: ${{ inputs.miljo }}
+          WORKDIR: ${{ inputs.working-directory }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+          HOPP_OVER: ${{ inputs.hopp-over }}
+        run: |
+          # >>> drift
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          // Én konstant, ikke-parametrisert select mot kataloger. Returnerer aldri radinnhold fra brukertabeller.
+          const SPORRING = `
+          with
+          anon as (select oid from pg_roles where rolname = 'anon'),
+          ext as (select objid from pg_depend where deptype = 'e'),
+          sig as (
+            select p.oid, n.nspname, p.proname,
+              format('%s.%s(%s)', n.nspname, p.proname, coalesce((select string_agg(format_type(t, null), ', ' order by o)
+                from unnest(string_to_array(nullif(p.proargtypes::text, ''), ' ')::oid[]) with ordinality as u(t, o)), '')) as sig
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where p.prokind in ('f', 'p')
+          )
+          select 'anon_default_acl' as kind, 'public' as skjema,
+            format('standard for %s i public (eier %s)', case d.defaclobjtype when 'r' then 'tabeller' when 'S' then 'sekvenser' when 'f' then 'funksjoner' else d.defaclobjtype::text end, pg_get_userbyid(d.defaclrole)) as navn,
+            string_agg(distinct a.privilege_type, ',') as detalj
+          from pg_default_acl d
+          join pg_namespace n on n.oid = d.defaclnamespace
+          cross join lateral aclexplode(d.defaclacl) a
+          where n.nspname = 'public' and pg_get_userbyid(d.defaclrole) = 'postgres' and a.grantee = (select oid from anon)
+          group by d.defaclobjtype, d.defaclrole
+          union all
+          select 'anon_kan_kjore_funksjon', sig.nspname, sig.sig, ''
+          from sig
+          where sig.nspname = 'public' and has_function_privilege('anon', sig.oid, 'EXECUTE')
+            and not exists (select 1 from ext where ext.objid = sig.oid)
+          union all
+          select 'rls_av', n.nspname, format('%s.%s', n.nspname, c.relname), ''
+          from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind in ('r', 'p') and not c.relrowsecurity
+            and not exists (select 1 from ext where ext.objid = c.oid)
+          union all
+          select 'anon_kan_endre', n.nspname, format('%s.%s', n.nspname, c.relname),
+            concat_ws(',', case when has_any_column_privilege('anon', c.oid, 'INSERT') then 'INSERT' end,
+              case when has_any_column_privilege('anon', c.oid, 'UPDATE') then 'UPDATE' end,
+              case when has_table_privilege('anon', c.oid, 'DELETE') then 'DELETE' end,
+              case when has_table_privilege('anon', c.oid, 'TRUNCATE') then 'TRUNCATE' end)
+          from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm')
+            and not exists (select 1 from ext where ext.objid = c.oid)
+            and (has_any_column_privilege('anon', c.oid, 'INSERT') or has_any_column_privilege('anon', c.oid, 'UPDATE')
+              or has_table_privilege('anon', c.oid, 'DELETE') or has_table_privilege('anon', c.oid, 'TRUNCATE'))
+          union all
+          select 'anon_kan_endre', n.nspname, format('%s.%s', n.nspname, c.relname), 'sekvens USAGE/UPDATE'
+          from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind = 'S'
+            and not exists (select 1 from ext where ext.objid = c.oid)
+            and (has_sequence_privilege('anon', c.oid, 'USAGE') or has_sequence_privilege('anon', c.oid, 'UPDATE'))
+          union all
+          select 'using_true', p.schemaname::text, format('%s.%s: %s', p.schemaname, p.tablename, p.policyname), p.cmd::text
+          from pg_policies p
+          where p.schemaname = 'public'
+            and (replace(coalesce(p.qual, ''), ' ', '') in ('true', '(true)') or replace(coalesce(p.with_check, ''), ' ', '') in ('true', '(true)'))
+            and p.roles <> array['service_role']::name[]
+          union all
+          select 'user_metadata', p.schemaname::text, format('%s.%s: %s', p.schemaname, p.tablename, p.policyname), 'policy'
+          from pg_policies p
+          where p.schemaname not in ('information_schema', 'pg_catalog')
+            and (coalesce(p.qual, '') ~* '(user_metadata|raw_user_meta_data)' or coalesce(p.with_check, '') ~* '(user_metadata|raw_user_meta_data)')
+          union all
+          select 'user_metadata', sig.nspname, sig.sig, 'funksjon'
+          from sig
+          where sig.nspname not in ('pg_catalog', 'information_schema', 'pg_toast', 'auth', 'storage', 'extensions', 'graphql',
+              'graphql_public', 'realtime', '_realtime', 'supabase_functions', 'supabase_migrations', 'vault', 'pgsodium',
+              'pgsodium_masks', 'net', 'cron', 'pgbouncer', '_analytics', 'pgtap')
+            and sig.nspname !~ '^pg_(temp|toast_temp)_'
+            and not exists (select 1 from ext where ext.objid = sig.oid)
+            and pg_get_functiondef(sig.oid) ~* '(user_metadata|raw_user_meta_data)'
+          `
+          const REGISTER_FINNES = "select to_regclass('public.offentlige_tabeller') is not null as finnes"
+          const REGISTER_RADER = 'select table_name from public.offentlige_tabeller'
+
+          const env = process.env
+          const ref = (env.REF_INPUT || env.REF_SECRET || '').trim()
+          const token = env.SUPABASE_ACCESS_TOKEN || ''
+          const base = env.DRIFT_API_BASE || 'https://api.supabase.com'
+          if (!/^[a-z0-9]{20}$/.test(ref)) { console.error('::error::Mangler gyldig project-ref (20 små bokstaver/tall) som input eller secret SUPABASE_PROJECT_REF.'); process.exit(1) }
+          if (!token) { console.error('::error::Mangler SUPABASE_ACCESS_TOKEN.'); process.exit(1) }
+
+          async function kjor(query) {
+            const svar = await fetch(`${base}/v1/projects/${ref}/database/query`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query }),
+            })
+            // Svarteksten kan inneholde detaljer vi ikke vil logge; bare statuskoden skrives ut.
+            if (!svar.ok) throw new Error(`Management API svarte ${svar.status}.`)
+            const data = await svar.json()
+            if (!Array.isArray(data)) throw new Error('Uventet svarform fra Management API.')
+            return data
+          }
+
+          // Unntak fra pgTAP-konfigen: «insert into tests_x values (...), (...)». Kommentarer fjernes først.
+          const unntak = { tests_rls_unntak: [], tests_anon_funksjon_allowlist: [], tests_using_true_unntak: [], tests_anon_skriv_unntak: [], tests_user_metadata_unntak: [] }
+          const konfig = path.join(env.WORKDIR || '.', env.CONFIG_FILE || '')
+          if (env.CONFIG_FILE && fs.existsSync(konfig)) {
+            const tekst = fs.readFileSync(konfig, 'utf8').split('\n').map((l) => l.replace(/--.*$/, '')).join('\n')
+            for (const stmt of tekst.split(';')) {
+              const m = /insert\s+into\s+(tests_[a-z_]+)\s+values\s*([\s\S]*)$/i.exec(stmt)
+              if (!m || !(m[1] in unntak)) continue
+              const rest = m[2].replace(/\s+on\s+conflict[\s\S]*$/i, '')
+              for (const t of rest.matchAll(/\(\s*((?:'(?:[^']|'')*'\s*,?\s*)+)\)/g)) {
+                unntak[m[1]].push([...t[1].matchAll(/'((?:[^']|'')*)'/g)].map((x) => x[1].replace(/''/g, "'")))
+              }
+            }
+          }
+          const sett = (navn, felt = 0) => new Set(unntak[navn].map((r) => r[felt]))
+          const rlsUnntak = sett('tests_rls_unntak')
+          const funksjoner = sett('tests_anon_funksjon_allowlist')
+          const skrivUnntak = sett('tests_anon_skriv_unntak')
+          const metaUnntak = sett('tests_user_metadata_unntak')
+          const trueUnntak = new Set(unntak.tests_using_true_unntak.map((r) => `${r[0]}|${r[1]}`))
+
+          async function main() {
+            const hoppOver = new Set((env.HOPP_OVER || '').split(',').map((s) => s.trim()).filter(Boolean))
+            const rader = await kjor(SPORRING)
+            const reg = await kjor(REGISTER_FINNES)
+            let registerAntall = 0
+            if (reg[0] && reg[0].finnes === true) {
+              for (const r of await kjor(REGISTER_RADER)) { trueUnntak.add(`${r.table_name}|SELECT`); registerAntall++ }
+            }
+            const tabellnavn = (n) => n.replace(/^public\./, '')
+            const erUnntatt = (r) => {
+              switch (r.kind) {
+                case 'rls_av': return rlsUnntak.has(tabellnavn(r.navn))
+                case 'anon_kan_kjore_funksjon': return funksjoner.has(r.navn)
+                case 'anon_kan_endre': return skrivUnntak.has(tabellnavn(r.navn))
+                case 'using_true': {
+                  const [tabell] = r.navn.replace(/^public\./, '').split(': ')
+                  return trueUnntak.has(`${tabell}|${r.detalj}`)
+                }
+                case 'user_metadata': return metaUnntak.has(r.navn)
+                default: return false
+              }
+            }
+            const aktive = rader.filter((r) => !hoppOver.has(r.kind))
+            const nye = aktive.filter((r) => !erUnntatt(r))
+            const miljo = env.MILJO || 'live'
+            console.log(`Live-drift ${miljo}: ${rader.length} treff, ${aktive.length - nye.length} unntatt (${registerAntall} fra offentlige_tabeller), ${nye.length} nye.`)
+            if (nye.length > 0) {
+              const linjer = nye.map((r) => `${r.kind}: ${r.navn}${r.detalj ? ` (${r.detalj})` : ''}`)
+              for (const l of linjer) console.error(`::error::${l}`)
+              if (env.GITHUB_STEP_SUMMARY) fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `### Live-drift ${miljo}: ${nye.length} nye funn\n\n${linjer.map((l) => `- \`${l}\``).join('\n')}\n\nRett opp med en migrasjon, ikke ved å utvide unntakene. Unntak kommer fra \`${env.CONFIG_FILE}\` og \`public.offentlige_tabeller\`.\n`)
+              process.exit(1)
+            }
+            console.log('OK: ingen nye funn.')
+          }
+          main().catch((e) => { console.error(`::error::${e instanceof Error ? e.message : e}`); process.exit(1) })
+          NODE
+          # <<< drift

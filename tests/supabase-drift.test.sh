@@ -38,4 +38,23 @@ m='-- ---- framtid-security:start ----'
 open(p,'w').write(s.replace(m,'drop table public.x;\n'+m,1))
 PY
 forvent "kode mellom header og markør stopper" 1 env WORKDIR="$TMP/p" bash "$TMP/drift.sh"
+# Valgfrie tester (manifestets «valgfrie»): fravær er greit, men finnes fila må den være lik kilden.
+valgfri() { # valgfri <modus: ok|redigert|utdatert> -> skriver $TMP/guard-valg.json og evt. fila i fixturen
+  python3 - "$RAD/sql-guard.json" "$TMP/guard-valg.json" "$T" "$1" <<'PY'
+import hashlib,json,sys
+g,ut,t,modus=sys.argv[1:5]
+d=json.load(open(g)); navn="99-valgfri.test.sql"; innhold="select 1;\n"
+h=hashlib.sha256(innhold.encode()).hexdigest()
+d["valgfrie"]={navn:h}
+json.dump(d,open(ut,"w"))
+if modus=="mangler": sys.exit(0)
+if modus=="utdatert": d["valgfrie"][navn]="0"*64; json.dump(d,open(ut,"w"))
+tekst=f"-- GENERERT – ikke rediger. Kilde: framtid-security@abc ({navn}, sha256: {h})\n-- Endringer gjøres i Framtidmedia-no/framtid-security (sql/tests) og synkes med scripts/sync-sql.mjs.\n-- ---- framtid-security:start ----\n"+(innhold+"-- hånd\n" if modus=="redigert" else innhold)
+open(t+"/"+navn,"w").write(tekst)
+PY
+}
+kopi; valgfri mangler; forvent "valgfri test som mangler er ikke en feil" 0 env SQL_GUARD_FILE="$TMP/guard-valg.json" WORKDIR="$TMP/p" bash "$TMP/drift.sh"
+kopi; valgfri ok; forvent "valgfri test som er lik kilden passerer" 0 env SQL_GUARD_FILE="$TMP/guard-valg.json" WORKDIR="$TMP/p" bash "$TMP/drift.sh"
+kopi; valgfri redigert; forvent "håndredigert valgfri test stopper" 1 env SQL_GUARD_FILE="$TMP/guard-valg.json" WORKDIR="$TMP/p" bash "$TMP/drift.sh"
+kopi; valgfri utdatert; forvent "utdatert valgfri test stopper" 1 env SQL_GUARD_FILE="$TMP/guard-valg.json" WORKDIR="$TMP/p" bash "$TMP/drift.sh"
 echo "SUPABASE-DRIFT-SELVTEST OK ($ok kontroller)"

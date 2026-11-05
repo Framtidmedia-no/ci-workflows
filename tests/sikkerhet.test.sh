@@ -89,4 +89,19 @@ rm -f .gitleaks.toml
 echo "TOKEN=ghp_$(openssl rand -hex 18)" > sist.env; git add -A; git commit -qm sist
 forvent "push til ny gren skanner siste commit" 1 env EVENT=push BEFORE_SHA=0000000000000000000000000000000000000000 BASE_SHA= KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh"
 
+# Full historikk (valgfritt): finner også det PR-skanningen ikke ser, på alle brancher, og er av som standard
+echo "== Full historikk"
+HEAD_NA=$(git rev-parse HEAD)
+git rm -q sist.env; git commit -qm rydd
+forvent "PR-området etter siste commit er rent" 0 skann "$HEAD_NA"
+forvent "full-historikk: gammel token i historikken flagges selv med ren base" 1 env EVENT=schedule FULL_HISTORIKK=true KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh"
+[ "$(env EVENT=schedule FULL_HISTORIKK=true KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh" 2>&1 | grep -c 'Skanner: --all')" = 1 ] || feil "full-historikk bruker ikke --all"
+[ "$(env EVENT=schedule FULL_HISTORIKK=false KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh" 2>&1 | grep -c 'Skanner: -n 50')" = 1 ] || feil "standard planlagt kjøring endret oppførsel"
+echo "  ok: standard (av) er uendret, full-historikk bruker --all"; ok=$((ok+1))
+RENT="$TMP/rent"; mkdir -p "$RENT"; (cd "$RENT" && git init -q && git config user.email t@t && git config user.name t && echo ren > r.md && git add -A && git commit -qm ren)
+forvent "full-historikk i rent repo er grønn" 0 bash -c "cd '$RENT' && env EVENT=schedule FULL_HISTORIKK=true KONFIG_REPO=.gitleaks.toml bash '$TMP/skann.sh'"
+cd "$RENT" && git checkout -q -b side && echo "TOKEN=ghp_$(openssl rand -hex 18)" > side.env && git add -A && git commit -qm side && git checkout -q -
+forvent "full-historikk skanner også andre brancher enn gjeldende" 1 env EVENT=schedule FULL_HISTORIKK=true KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh"
+cd "$REPO"
+
 echo "SIKKERHET-SELVTEST OK ($ok kontroller)"

@@ -84,6 +84,20 @@ jobs:
             if (createHash('sha256').update(innhold).digest('hex') !== m[3]) feil.push(`${navn}: redigert for hånd`)
             else if (m[3] !== forventet) feil.push(`${navn}: utdatert mot kilden (kjør sync-sql.mjs på nytt)`)
           }
+          // Valgfrie tester (f.eks. 06): sjekkes bare der fila finnes, mangel er ikke en feil.
+          const valgfrie = JSON.parse(fs.readFileSync(process.env.GUARD_FILE, 'utf8')).valgfrie || {}
+          for (const [navn, forventet] of Object.entries(valgfrie)) {
+            const sti = path.join(process.env.TEST_DIR, navn)
+            if (!fs.existsSync(sti)) continue
+            const tekst = fs.readFileSync(sti, 'utf8')
+            const idx = tekst.indexOf(`${MARKOR}\n`)
+            const linjer = idx < 0 ? [] : tekst.slice(0, idx).split('\n')
+            const m = linjer.length === 3 && linjer[2] === '' && linjer[1] === LINJE2 ? FORSTE.exec(linjer[0]) : null
+            if (!m || m[2] !== navn) { feil.push(`${navn}: ikke en generert fil (kjør sync-sql.mjs i framtid-security)`); continue }
+            const innhold = tekst.slice(idx + MARKOR.length + 1)
+            if (createHash('sha256').update(innhold).digest('hex') !== m[3]) feil.push(`${navn}: redigert for hånd`)
+            else if (m[3] !== forventet) feil.push(`${navn}: utdatert mot kilden (kjør sync-sql.mjs på nytt)`)
+          }
           if (feil.length) { for (const f of feil) console.error(`::error::${f}`); process.exit(1) }
           console.log(`OK: ${Object.keys(manifest).length} tester er lik kanonisk`)
           NODE
