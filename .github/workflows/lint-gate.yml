@@ -7,6 +7,13 @@
 #      enn på base-branchen. Terskelen er dermed alltid «dagens nivå» og
 #      ratchet-er seg ned av seg selv — ingen tall å vedlikeholde.
 #
+# ADVARSLER (opt-in): uten `maks-advarsler` telles ikke advarsler (som før).
+# Med `maks-advarsler: 0` (eller et annet tall) gjelder i tillegg:
+#   1. Endrede filer feiler på flere advarsler enn tallet (--max-warnings).
+#   2. Antall advarsler på hele repoet i PR-en må ikke være høyere enn på base
+#      (samme ratchet som for feil). Et repo med 5 advarsler i dag blir altså
+#      ikke felt av gamle advarsler, bare av nye.
+#
 # Repoet kaller den med:
 #   jobs:
 #     lint-port:
@@ -36,6 +43,13 @@ on:
         description: Argumenter til ESLint for hele-repoet-tellingen
         type: string
         default: '.'
+      maks-advarsler:
+        description: >-
+          Tom (default) = advarsler telles ikke. Et tall (f.eks. '0') gjør advarsler til
+          en del av porten: endrede filer får --max-warnings <tall>, og antall advarsler
+          på hele repoet må ikke øke mot base.
+        type: string
+        default: ''
       typecheck:
         description: Kjør også tsc --noEmit (for repoer uten egen CI)
         type: boolean
@@ -134,6 +148,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MAKS_ADVARSLER: ${{ inputs.maks-advarsler }}
         run: |
           set -o pipefail
           # --relative: bare filer under working-directory, med sti relativt til den.
@@ -144,9 +159,23 @@ jobs:
           fi
           echo "Linter ${#FILER[@]} endrede fil(er) i $WD:"
           printf '  %s\n' "${FILER[@]}"
-          ${{ steps.pm.outputs.run }} eslint --no-warn-ignored "${FILER[@]}"
+          ARGS=(--no-warn-ignored)
+          if [ -n "$MAKS_ADVARSLER" ]; then
+            if ! [[ "$MAKS_ADVARSLER" =~ ^[0-9]+$ ]]; then
+              echo "::error::maks-advarsler må være et heltall eller tom, fikk '$MAKS_ADVARSLER'."
+              exit 1
+            fi
+            ARGS+=(--max-warnings "$MAKS_ADVARSLER")
+            echo "Advarsler i endrede filer teller (maks $MAKS_ADVARSLER)."
+          fi
+          if ! ${{ steps.pm.outputs.run }} eslint "${ARGS[@]}" "${FILER[@]}"; then
+            if [ -n "$MAKS_ADVARSLER" ]; then
+              echo "::error::Lint-port 1 feilet: feil eller flere enn $MAKS_ADVARSLER advarsler i filene PR-en endrer. Rett opp advarslene (kjør '${{ steps.pm.outputs.run }} eslint <fil>' lokalt)."
+            fi
+            exit 1
+          fi
 
-      - name: "Port 2: terskel mot base (feil må ikke øke)"
+      - name: "Port 2: terskel mot base (feil, og advarsler hvis maks-advarsler er satt, må ikke øke)"
         if: steps.eslint.outputs.finnes == 'true'
         shell: bash
         working-directory: ${{ inputs.working-directory }}
@@ -155,24 +184,26 @@ jobs:
           RUN: ${{ steps.pm.outputs.run }}
           INSTALL: ${{ steps.pm.outputs.install }}
           ESLINT_ARGS: ${{ inputs.eslint-args }}
+          MAKS_ADVARSLER: ${{ inputs.maks-advarsler }}
         run: |
-          tell() {  # skriver antall errors til stdout, eller "ukjent" hvis eslint ikke kunne kjøre
+          tell() {  # skriver "<errors> <warnings>" til stdout, eller "ukjent" hvis eslint ikke kunne kjøre
             local ut="$1"
             rm -f "$ut"
             $RUN eslint $ESLINT_ARGS -f json -o "$ut" >/dev/null 2>&1 || true
             if [ -s "$ut" ]; then
-              node -e "const r=require(process.argv[1]);console.log(r.reduce((a,f)=>a+f.errorCount,0))" "$ut"
+              node -e "const r=require(process.argv[1]);console.log(r.reduce((a,f)=>a+f.errorCount,0)+' '+r.reduce((a,f)=>a+f.warningCount,0))" "$ut"
             else
               echo ukjent
             fi
           }
           HODE_ROT=$(pwd)
-          HODE=$(tell /tmp/eslint-hode.json)
-          if [ "$HODE" = "ukjent" ]; then
+          HODE_UT=$(tell /tmp/eslint-hode.json)
+          if [ "$HODE_UT" = "ukjent" ]; then
             echo "::error::ESLint kunne ikke kjøre på PR-en (krasj eller ugyldig config). Kjør '$RUN eslint $ESLINT_ARGS' lokalt i $WD."
             $RUN eslint $ESLINT_ARGS 2>&1 | tail -40 || true
             exit 1
           fi
+          read -r HODE HODE_ADV <<< "$HODE_UT"
 
           # Base lintes i et worktree: install på roten der lockfila ligger,
           # ESLint fra samme underkatalog som PR-en.
@@ -180,14 +211,23 @@ jobs:
           pushd /tmp/base >/dev/null
           if $INSTALL >/dev/null 2>&1 && cd "$WD"; then
             BASE_ROT=$(pwd)
-            BASE=$(tell /tmp/eslint-base.json)
+            BASE_UT=$(tell /tmp/eslint-base.json)
           else
             BASE_ROT=/tmp/base
-            BASE=ukjent
+            BASE_UT=ukjent
           fi
           popd >/dev/null
 
+          if [ "$BASE_UT" = "ukjent" ]; then
+            BASE=ukjent
+          else
+            read -r BASE BASE_ADV <<< "$BASE_UT"
+          fi
+
           echo "Lint-errors: PR=$HODE  base=$BASE"
+          if [ -n "$MAKS_ADVARSLER" ]; then
+            echo "Lint-advarsler: PR=$HODE_ADV  base=${BASE_ADV:-ukjent}"
+          fi
           if [ "$BASE" = "ukjent" ]; then
             echo "::notice::Kunne ikke måle lint på base-branchen — porten gater kun på at PR-en linter."
             exit 0
@@ -204,6 +244,23 @@ jobs:
           fi
           if [ "$HODE" -lt "$BASE" ]; then
             echo "::notice::Lint-errors gikk ned fra $BASE til $HODE. Takk!"
+          fi
+
+          # Advarsler: bare med maks-advarsler satt (opt-in), ellers som før.
+          if [ -n "$MAKS_ADVARSLER" ]; then
+            if [ "$HODE_ADV" -gt "$BASE_ADV" ]; then
+              echo "::error::Lint-advarsler økte fra $BASE_ADV (base) til $HODE_ADV (PR). Nye advarsler må fikses før merge."
+              HODE_ROT="$HODE_ROT" BASE_ROT="$BASE_ROT" node -e "
+                const b=require('/tmp/eslint-base.json'), h=require('/tmp/eslint-hode.json');
+                const per=(r,rot)=>Object.fromEntries(r.map(f=>[f.filePath.replace(rot+'/',''),f.warningCount]));
+                const pb=per(b,process.env.BASE_ROT), ph=per(h,process.env.HODE_ROT);
+                for (const [f,n] of Object.entries(ph)) if (n>(pb[f]||0)) console.log('  +'+(n-(pb[f]||0))+'  '+f);
+              "
+              exit 1
+            fi
+            if [ "$HODE_ADV" -lt "$BASE_ADV" ]; then
+              echo "::notice::Lint-advarsler gikk ned fra $BASE_ADV til $HODE_ADV. Takk!"
+            fi
           fi
 
       - name: Typecheck
