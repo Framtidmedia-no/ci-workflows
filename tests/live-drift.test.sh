@@ -88,6 +88,9 @@ sql "revoke execute on function public.ny() from public, anon, authenticated; gr
 sql "create table public.ref (id int); alter table public.ref enable row level security; create policy r on public.ref for select to authenticated using (true)"
 forvent "using(true) uten unntak" 1 "using_true: public.ref: r"
 KONF="insert into tests_using_true_unntak values ('ref', 'SELECT') on conflict do nothing;" forvent "using(true)-unntak per kommando" 0 "OK: ingen nye funn"
+KONF="insert into tests_using_true_unntak (tabell, kommando) values
+  ('annen', 'SELECT'), ('ref', 'SELECT') -- kolonneliste og flere rader
+on conflict do nothing;" forvent "kolonneliste og flere rader i én insert" 0 "OK: ingen nye funn"
 KONF="insert into tests_using_true_unntak values ('ref', 'INSERT') on conflict do nothing;" forvent "unntak for feil kommando teller ikke" 1 "using_true"
 sql "drop policy r on public.ref; alter table public.ref disable row level security"
 KONF="insert into tests_rls_unntak values ('ref') on conflict do nothing;" forvent "rls-unntak" 0 "OK: ingen nye funn"

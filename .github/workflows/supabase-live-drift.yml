@@ -201,7 +201,7 @@ jobs:
           if (env.CONFIG_FILE && fs.existsSync(konfig)) {
             const tekst = fs.readFileSync(konfig, 'utf8').split('\n').map((l) => l.replace(/--.*$/, '')).join('\n')
             for (const stmt of tekst.split(';')) {
-              const m = /insert\s+into\s+(tests_[a-z_]+)\s+values\s*([\s\S]*)$/i.exec(stmt)
+              const m = /insert\s+into\s+(tests_[a-z_]+)\s*(?:\([^)]*\)\s*)?values\s*([\s\S]*)$/i.exec(stmt)
               if (!m || !(m[1] in unntak)) continue
               const rest = m[2].replace(/\s+on\s+conflict[\s\S]*$/i, '')
               for (const t of rest.matchAll(/\(\s*((?:'(?:[^']|'')*'\s*,?\s*)+)\)/g)) {
