@@ -51,8 +51,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          tall=$(gh api "orgs/Framtidmedia-no/actions/runners?per_page=100" \
-            --jq '[.runners[] | select(.status == "online") | select(any(.labels[]; .name == "framtid-ci"))] | "\(([.[] | select(.busy)] | length)) \(length)"')
+          # Runnerne ligger i enterprise-gruppen framtid-ci (id 5 i orgen) og vises ikke i org-listen, så vi
+          # slår sammen begge og fjerner duplikater.
+          tall=$( { gh api "orgs/Framtidmedia-no/actions/runners?per_page=100" --jq '.runners[]'; \
+                    gh api "orgs/Framtidmedia-no/actions/runner-groups/5/runners?per_page=100" --jq '.runners[]'; } \
+            | jq -rs '[unique_by(.id)[] | select(.status == "online") | select(any(.labels[]; .name == "framtid-ci"))] | "\(([.[] | select(.busy)] | length)) \(length)"')
           opptatt=${tall% *}; totalt=${tall#* }
           # Timeren ci-runner-status på framtid-fs-worker skriver tallet hvert 30. sekund (GR-664). Er
           # tidsstempelet vi finner her eldre enn VAKT_SEK, har timeren stoppet. Vi skriver likevel
