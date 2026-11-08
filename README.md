@@ -44,13 +44,21 @@ Krasjer ESLint på PR-en (ugyldig config, manglende plugin) feiler porten — de
 
 ## sikkerhet.yml — hemmeligheter og avhengighetsvarsler (FRA-1753)
 
-Basis-nivået i sikkerhetsstandarden. To jobber:
+Basis-nivået i sikkerhetsstandarden. Tre jobber:
 
 1. **gitleaks** (CLI, låst versjon med verifisert sjekksum, ikke `gitleaks-action` som krever lisens for org). Skanner bare
    commits i PR-området (`base..HEAD`), så gammel historikk gjør ikke nye PR-er røde. Offentlige klientnøkler
    (`NEXT_PUBLIC_*`/`VITE_*`/`EXPO_PUBLIC_*`, anon-nøkler, `sb_publishable_*`, Sentry DSN, Stripe publishable) gir ikke falsk
    positiv; `service_role`-nøkler og andre hemmeligheter stopper PR-en.
 2. **audit** (`pnpm audit`/`npm audit`, high og over) som advarsel. `fail-on-audit: true` gjør den til feil.
+3. **osv** (FRA-1812/GR-1732): `osv-scanner` (CLI, låst versjon med verifisert sjekksum) mot `package-lock.json`,
+   `pnpm-lock.yaml` og `yarn.lock`, altså konkrete versjoner og ikke versjonsområder. I en PR (og merge queue) sammenlignes
+   HEAD mot basen, og bare sårbarheter PR-en **introduserer** rapporteres som `::warning` (pakke, antall, høyeste CVSS, id-er).
+   Eksisterende sårbarheter rapporteres ikke og kan aldri gjøre en urelatert PR rød. Ved `push` og andre hendelser varsles alt,
+   men jobben feiler aldri. `fail-on-osv: true` gjør **nye** funn med CVSS 7.0+ (HIGH/CRITICAL) til feil; standard er av
+   (varsle-modus). Funn uten CVSS-score teller som advarsel. Feilhåndtering som for gitleaks: feil sjekksum gir rødt, mens
+   nedlastingsfeil og nettfeil mot osv.dev gir advarsel og hopp over. `osv` kommer i tillegg til `audit` (npm/pnpm bruker
+   GitHubs advisory-database, OSV dekker flere kilder); `audit` vurderes fjernet når OSV har gått stabilt.
 
 Feilhåndtering er bevisst asymmetrisk: funn, ugyldig konfig og krasj gir rødt; **feil sjekksum gir rødt** (aldri fail-open mot en
 manipulert binær); en nedlasting som feiler pga. nett gir advarsel og hopper over, ellers kunne et nettverkshikk låse alle merger.
@@ -71,7 +79,7 @@ jobs:
       contents: read
 ```
 
-Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleaks-config`, `fail-on-audit`,
+Valgfrie inputs: `runs-on` (JSON, f.eks. output fra `velg-runner.yml`), `gitleaks-config`, `fail-on-audit`, `fail-on-osv`,
 `full-historikk` (standard av, FRA-1765): skanner alle brancher og tagger i stedet for PR-området og hopper over audit.
 Kall den fra en egen planlagt workflow (ukentlig); funn i gammel historikk gjør ikke vanlige PR-er røde.
 
@@ -88,6 +96,8 @@ jobs:
 ``` Selvtest:
 `bash tests/sikkerhet.test.sh` (lokalt med `GITLEAKS_BIN=...`, i CI også nedlasting og sjekksum).
 Oppgradering av gitleaks: ny versjon + begge sjekksummer i `env:`, kjør selvtesten.
+Oppgradering av osv-scanner: ny `OSV_VERSION` + begge sjekksummer fra `osv-scanner_SHA256SUMS` i releasen, kjør selvtesten (lokalt med `OSV_BIN=...`).
+`full-historikk` hopper over både `audit` og `osv`.
 
 ## supabase-test.yml — pgTAP og skjema-lint (FRA-1754)
 

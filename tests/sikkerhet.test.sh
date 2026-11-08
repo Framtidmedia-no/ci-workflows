@@ -104,4 +104,46 @@ cd "$RENT" && git checkout -q -b side && echo "TOKEN=ghp_$(openssl rand -hex 18)
 forvent "full-historikk skanner også andre brancher enn gjeldende" 1 env EVENT=schedule FULL_HISTORIKK=true KONFIG_REPO=.gitleaks.toml bash "$TMP/skann.sh"
 cd "$REPO"
 
+# --- OSV (FRA-1812/GR-1732): nye sårbarheter i lockfiler i PR-en ---
+echo "== OSV"
+trekk osv-installer > "$TMP/osv-installer.sh"; trekk osv-skann > "$TMP/osv.sh"
+[ -s "$TMP/osv-installer.sh" ] && [ -s "$TMP/osv.sh" ] || feil "fant ikke OSV-skriptene i workflowen"
+for v in OSV_VERSION OSV_SHA256_X64 OSV_SHA256_ARM64; do
+  export "$v=$(grep -E "^\s+$v:" "$WF" | head -1 | sed -E "s/^\s+$v:\s*'?([^' ]+)'?.*/\1/")"
+done
+if [ -z "${OSV_BIN:-}" ]; then
+  [ "$(uname -s)" = Linux ] || feil "sett OSV_BIN lokalt, installasjonen testes bare på Linux"
+  : > "$GITHUB_OUTPUT"
+  forvent "osv: låst versjon med riktig sjekksum" 0 bash "$TMP/osv-installer.sh"
+  grep -q "installert=true" "$GITHUB_OUTPUT" || feil "osv: installert=true ble ikke satt"
+  export OSV_BIN="$RUNNER_TEMP/osv/osv-scanner"
+  forvent "osv: feil sjekksum stopper (aldri fail-open)" 1 env OSV_SHA256_X64=0000000000000000000000000000000000000000000000000000000000000000 OSV_SHA256_ARM64=0000000000000000000000000000000000000000000000000000000000000000 RUNNER_TEMP="$TMP/runner2" bash "$TMP/osv-installer.sh"
+  : > "$GITHUB_OUTPUT"
+  forvent "osv: nedlastingsfeil gir advarsel og hopper over, ikke rød" 0 env OSV_BASE_URL=http://127.0.0.1:9 RUNNER_TEMP="$TMP/runner3" bash "$TMP/osv-installer.sh"
+  grep -q "installert=false" "$GITHUB_OUTPUT" || feil "osv: installert=false ble ikke satt ved nedlastingsfeil"
+fi
+lock() { # lodash 4.17.15 har kjente HIGH-sårbarheter og vil alltid ha det. «Ren» = ingen avhengigheter, så selvtesten ikke brekker når en ny advisory dukker opp på en nyere versjon.
+  printf '{"name":"t","lockfileVersion":3,"requires":true,"packages":{"":{"name":"t","version":"1.0.0","dependencies":{"lodash":"%s"}},"node_modules/lodash":{"version":"%s","resolved":"https://registry.npmjs.org/lodash/-/lodash-%s.tgz"}}}\n' "$1" "$1" "$1" > package-lock.json
+}
+OREPO="$TMP/osvrepo"; mkdir -p "$OREPO"; cd "$OREPO"
+git init -q; git config user.email t@t; git config user.name t
+echo "# ingen lockfil" > a.md; git add -A; git commit -qm base; OB0=$(git rev-parse HEAD)
+osv() { env EVENT=pull_request BASE_SHA="$1" FAIL_ON_OSV="${2:-false}" bash "$TMP/osv.sh"; }
+forvent "osv: repo uten lockfil er grønt" 0 osv "$OB0" true
+printf '{"name":"t","lockfileVersion":3,"requires":true,"packages":{"":{"name":"t","version":"1.0.0"}}}\n' > package-lock.json
+git add -A; git commit -qm ren; OB1=$(git rev-parse HEAD)
+forvent "osv: ren lockfil er grønn" 0 osv "$OB0" true
+lock 4.17.15; git add -A; git commit -qm sarbar
+forvent "osv: ny sårbar pakke gir bare advarsel i varsle-modus" 0 osv "$OB1" false
+[ "$(osv "$OB1" false 2>&1 | grep -c '::warning.*lodash')" -ge 1 ] || feil "osv: advarselen nevner ikke lodash"
+forvent "osv: ny HIGH/CRITICAL stopper PR-en når fail-on-osv er på" 1 osv "$OB1" true
+OB2=$(git rev-parse HEAD)
+echo "mer" > b.md; git add -A; git commit -qm urelatert
+forvent "osv: eksisterende sårbarhet som PR-en ikke rører blokkerer ikke, selv med fail-on-osv" 0 osv "$OB2" true
+forvent "osv: lockfil ny i PR-en (fantes ikke i base) regnes som nye funn" 1 osv "$OB0" true
+forvent "osv: push-hendelse varsler bare, uavhengig av fail-on-osv" 0 env EVENT=push BASE_SHA= FAIL_ON_OSV=true bash "$TMP/osv.sh"
+printf '#!/bin/sh\necho "osv.dev utilgjengelig" >&2\nexit 127\n' > "$TMP/osv-feil.sh"; chmod +x "$TMP/osv-feil.sh"
+forvent "osv: skannerkrasj/nettfeil gir advarsel og hopper over, ikke rød" 0 env OSV_BIN="$TMP/osv-feil.sh" EVENT=pull_request BASE_SHA="$OB1" FAIL_ON_OSV=true bash "$TMP/osv.sh"
+cd "$REPO"
+
 echo "SIKKERHET-SELVTEST OK ($ok kontroller)"
