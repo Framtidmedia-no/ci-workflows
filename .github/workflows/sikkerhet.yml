@@ -58,6 +58,10 @@ on:
         description: Gjør audit av avhengigheter til en feil i stedet for advarsel
         type: boolean
         default: false
+      fail-on-osv:
+        description: 'OSV-skanning (nye sårbarheter i lockfiler): gjør nye HIGH/CRITICAL (CVSS 7.0+) til en feil i stedet for advarsel. Standard av (varsle-modus).'
+        type: boolean
+        default: false
       full-historikk:
         description: 'Skann HELE historikken (alle brancher og tagger) i stedet for PR-området. Bruk fra en planlagt (ukentlig) workflow; hopper over audit. Standard av.'
         type: boolean
@@ -71,6 +75,10 @@ env:
   GITLEAKS_VERSION: '8.30.1'
   GITLEAKS_SHA256_X64: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
   GITLEAKS_SHA256_ARM64: 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080'
+  # osv-scanner (FRA-1812/GR-1732). Sjekksummene er målt mot nedlastede filer og de publiserte osv-scanner_SHA256SUMS (08.11.2026).
+  OSV_VERSION: '2.7.0'
+  OSV_SHA256_X64: '160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b'
+  OSV_SHA256_ARM64: '4061ef4c021ed3c47f203b818f337e351336cc5cd67c0274fc36bd1dfc728dd7'
 
 jobs:
   gitleaks:
@@ -208,3 +216,118 @@ jobs:
             if [ "$FAIL_ON_AUDIT" = "true" ]; then echo "::error::Audit fant alvorlige sårbarheter (high/critical)."; exit "$rc"; fi
             echo "::warning::Audit fant alvorlige sårbarheter (high/critical). Advarsel, ikke feil. Renovate tar oppdateringene; alvorlige funn følges opp i Linear."
           fi
+
+  osv:
+    name: Nye sårbarheter i lockfiler (OSV)
+    if: ${{ !inputs.full-historikk }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Installer osv-scanner (låst versjon og sjekksum)
+        id: install
+        run: |
+          # >>> osv-installer
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) a=linux_amd64; sha="$OSV_SHA256_X64" ;;
+            aarch64|arm64) a=linux_arm64; sha="$OSV_SHA256_ARM64" ;;
+            *) echo "::error::Ukjent arkitektur $(uname -m)"; exit 1 ;;
+          esac
+          mappe="$RUNNER_TEMP/osv"
+          mkdir -p "$mappe"
+          base="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
+          if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 -o "$mappe/osv-scanner" "$base/v${OSV_VERSION}/osv-scanner_${a}"; then
+            echo "::warning::Kunne ikke laste ned osv-scanner. OSV-skanningen hoppes over denne kjøringen (nettverksfeil, ikke funn)."
+            echo "installert=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if command -v sha256sum >/dev/null; then sjekk() { sha256sum -c -; }; else sjekk() { shasum -a 256 -c -; }; fi
+          if ! echo "$sha  $mappe/osv-scanner" | sjekk; then
+            echo "::error::Sjekksummen for osv-scanner stemmer ikke. Stopper i stedet for å kjøre en uverifisert binær."
+            exit 1
+          fi
+          chmod +x "$mappe/osv-scanner"
+          echo "installert=true" >> "$GITHUB_OUTPUT"
+          # <<< osv-installer
+
+      - name: Skann lockfiler for nye sårbarheter
+        if: steps.install.outputs.installert == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          FAIL_ON_OSV: ${{ inputs.fail-on-osv }}
+        run: |
+          # >>> osv-skann
+          set -uo pipefail
+          bin="${OSV_BIN:-$RUNNER_TEMP/osv/osv-scanner}"
+          # Terskel for «alvorlig»: CVSS 7.0 og over (HIGH/CRITICAL). Funn uten score teller som advarsel, ikke feil.
+          terskel=7.0
+          arb="$(mktemp -d)"
+          hode="$arb/hode.tsv"; basen="$arb/base.tsv"; : > "$hode"; : > "$basen"
+
+          # PR og merge queue sammenlignes mot basen (bare det PR-en introduserer). Alt annet (push osv.) varsler om alt,
+          # men feiler aldri: en eksisterende sårbarhet er ikke noe denne PR-en kan rette.
+          diff=false
+          case "$EVENT" in pull_request|pull_request_target|merge_group) diff=true ;; esac
+          if [ "$diff" = true ] && { [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; }; then
+            echo "::warning::Fant ikke base-commiten. Viser alle funn i stedet for bare nye, og feiler ikke."
+            diff=false
+          fi
+
+          # Skanner én lockfil og skriver TSV: fil, pakke@versjon, sårbarhets-id, høyeste CVSS (0 = ukjent).
+          # Retur 0 = ok (også «ingen funn»), 1 = skanneren kunne ikke kjøre.
+          skann() { # lockfil ut-tsv
+            local f="$1" ut="$2" js="$arb/s.json" rc=0
+            "$bin" scan source -L "$f" --format json < /dev/null > "$js" 2> "$arb/s.err" || rc=$?
+            case "$rc" in
+              0|1) ;;
+              128) return 0 ;;   # ingen pakker funnet
+              *) echo "::warning::osv-scanner feilet (exit $rc) på $f: $(tail -1 "$arb/s.err")"; return 1 ;;
+            esac
+            jq -r --arg f "$f" '.results[]?.packages[]? | . as $p
+              | ([$p.groups[]?.max_severity | select(. != null and . != "") | tonumber] | max // 0) as $sev
+              | $p.vulnerabilities[]? | [$f, "\($p.package.name)@\($p.package.version)", .id, $sev] | @tsv' "$js" >> "$ut"
+          }
+
+          filer="$(git ls-files | grep -E '(^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$' | grep -v 'node_modules/' || true)"
+          if [ -z "$filer" ]; then echo "Ingen lockfiler (package-lock.json, pnpm-lock.yaml, yarn.lock): ingenting å skanne."; exit 0; fi
+
+          nye=''; [ "$diff" = true ] && nye='nye '
+          feilet=0
+          while IFS= read -r f; do
+            skann "$f" "$hode" || feilet=1
+            if [ "$diff" = true ] && git cat-file -e "${BASE_SHA}:${f}" 2>/dev/null; then
+              mkdir -p "$arb/base/$(dirname "$f")"
+              git show "${BASE_SHA}:${f}" > "$arb/base/$f"
+              ( cd "$arb/base" && skann "$f" "$basen" ) || feilet=1
+            fi
+          done <<< "$filer"
+          if [ "$feilet" = 1 ]; then echo "::warning::OSV-skanningen ble ikke fullført (verktøy- eller nettfeil mot osv.dev). Hoppet over, ikke funn."; exit 0; fi
+
+          # Nye funn = i HEAD, men ikke i basen (samme fil, pakkeversjon og id). Uten diff er alt «nytt».
+          # FILENAME==ARGV[1], ikke NR==FNR: med tom base-fil er NR==FNR sann også for HEAD-filen.
+          awk -F'\t' 'FILENAME==ARGV[1]{b[$1 FS $2 FS $3]=1;next} !(($1 FS $2 FS $3) in b)' "$basen" "$hode" > "$arb/nye.tsv"
+          antall=$(wc -l < "$arb/nye.tsv" | tr -d ' ')
+          if [ "$antall" = 0 ]; then echo "Ingen nye sårbarheter i lockfilene."; exit 0; fi
+
+          # Én linje per pakke: antall, høyeste score og id-er.
+          alvorlige=0
+          while IFS=$'\t' read -r f pk n sev ids; do
+            hoy=$(awk -v s="$sev" -v t="$terskel" 'BEGIN{print (s+0>=t+0)?"ja":"nei"}')
+            [ "$hoy" = ja ] && alvorlige=$((alvorlige+1))
+            echo "::warning file=$f::$pk: $n ${nye}sårbarheter (høyeste CVSS $sev): $ids"
+          done < <(sort -t$'\t' -k1,1 -k2,2 "$arb/nye.tsv" | awk -F'\t' '
+              { k=$1 FS $2; n[k]++; if ($4+0 > m[k]+0) m[k]=$4; i[k]=(i[k] ? i[k] ", " : "") $3; if (!(k in o)) { o[k]=++c; kk[c]=k } }
+              END { for (x=1;x<=c;x++) { k=kk[x]; split(k, p, FS); printf "%s\t%s\t%s\t%s\t%s\n", p[1], p[2], n[k], m[k], i[k] } }')
+          echo "OSV: $antall ${nye}funn, $alvorlige pakke(r) med CVSS >= $terskel."
+          if [ "$diff" = true ] && [ "${FAIL_ON_OSV:-false}" = true ] && [ "$alvorlige" -gt 0 ]; then
+            echo "::error::PR-en introduserer alvorlige sårbarheter (CVSS >= $terskel) i lockfilene. Oppdater pakken, eller dokumenter hvorfor den må bli."
+            exit 1
+          fi
+          exit 0
+          # <<< osv-skann
