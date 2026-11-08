@@ -1,0 +1,17 @@
+# ci-workflows er offentlig, og org-rulesettets påkrevde workflow (fra private ci-krav) kjører ikke mot
+# offentlige repoer. Derfor kaller repoet sikkerhetsporten selv, lokalt, med samme innstillinger som ci-krav
+# (fail-on-osv). Jobbnavnet «krav-sikkerhet» gir samme sjekknavn som i de andre repoene.
+name: Krav sikkerhet (selv)
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  krav-sikkerhet:
+    uses: ./.github/workflows/sikkerhet.yml
+    with:
+      fail-on-osv: true
+    permissions:
+      contents: read
