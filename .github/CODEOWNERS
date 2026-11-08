@@ -1,0 +1,4 @@
+# Forsyningskjeden (FRA-1818): alt her påvirker alle repoer som henter fra oss.
+# Beslutning 08.11.2026: Frank er eneste eier inntil vi er flere utviklere (ikke fire-øyne-kontroll).
+* @frlund3
+/.github/workflows/ @frlund3

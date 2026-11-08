@@ -1,6 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "local>Framtidmedia-no/renovate-config"
+  "extends": ["local>Framtidmedia-no/renovate-config"],
+  "packageRules": [
+    {
+      "description": "Kjede-repo (FRA-1818): Renovate-PR-er her skal gjennomgås, ikke automerges. Det er kildene alle andre repoer henter fra.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest"],
+      "automerge": false
+    }
   ]
 }
