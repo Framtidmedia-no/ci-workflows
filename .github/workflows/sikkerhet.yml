@@ -287,7 +287,15 @@ jobs:
             case "$rc" in
               0|1) ;;
               128) return 0 ;;   # ingen pakker funnet
-              *) echo "::warning::osv-scanner feilet (exit $rc) på $f: $(tail -1 "$arb/s.err")"; return 1 ;;
+              *)
+                # Nett- og osv.dev-feil hoppes over (et hikk skal ikke låse alle merger). Alt annet, som en lockfil som
+                # ikke lar seg lese, er en reell feil: ellers kunne en ødelagt lockfil skjule alle funn.
+                if grep -Eqi 'dial tcp|no such host|i/o timeout|timed out|deadline exceeded|connection (refused|reset)|tls:|unexpected eof|status code 5[0-9][0-9]|temporary failure|network is unreachable|api\.osv\.dev' "$arb/s.err"; then
+                  echo "::warning::osv-scanner nådde ikke osv.dev på $f (nett- eller tjenestefeil): $(tail -1 "$arb/s.err")"; : >> "$arb/feil-nett"
+                else
+                  echo "::warning file=$f::osv-scanner kunne ikke lese $f (exit $rc): $(tail -1 "$arb/s.err")"; : >> "$arb/feil-lesing"
+                fi
+                return 1 ;;
             esac
             jq -r --arg f "$f" '.results[]?.packages[]? | . as $p
               | ([$p.groups[]?.max_severity | select(. != null and . != "") | tonumber] | max // 0) as $sev
@@ -298,22 +306,35 @@ jobs:
           if [ -z "$filer" ]; then echo "Ingen lockfiler (package-lock.json, pnpm-lock.yaml, yarn.lock): ingenting å skanne."; exit 0; fi
 
           nye=''; [ "$diff" = true ] && nye='nye '
-          feilet=0
           while IFS= read -r f; do
-            skann "$f" "$hode" || feilet=1
+            skann "$f" "$hode"
             if [ "$diff" = true ] && git cat-file -e "${BASE_SHA}:${f}" 2>/dev/null; then
               mkdir -p "$arb/base/$(dirname "$f")"
               git show "${BASE_SHA}:${f}" > "$arb/base/$f"
-              ( cd "$arb/base" && skann "$f" "$basen" ) || feilet=1
+              ( cd "$arb/base" && skann "$f" "$basen" )
             fi
           done <<< "$filer"
-          if [ "$feilet" = 1 ]; then echo "::warning::OSV-skanningen ble ikke fullført (verktøy- eller nettfeil mot osv.dev). Hoppet over, ikke funn."; exit 0; fi
+          # Avslutning: funn fra lockfiler som ble skannet teller alltid, også når en annen lockfil feilet.
+          # Lesefeil (ikke nett) feiler jobben i PR med fail-on-osv; nettfeil er bare advarsel.
+          avslutt() { # rc-fra-funn
+            local rc="$1"
+            if [ -f "$arb/feil-nett" ]; then echo "::warning::OSV-skanningen ble ikke fullført for alle lockfiler (nettfeil mot osv.dev). Disse er hoppet over, ikke funn."; fi
+            if [ -f "$arb/feil-lesing" ]; then
+              if [ "$diff" = true ] && [ "${FAIL_ON_OSV:-false}" = true ]; then
+                echo "::error::Minst én lockfil kunne ikke leses av osv-scanner (se advarslene over). Rett lockfilen: en ødelagt lockfil kan ikke skannes og kunne ellers skjult sårbarheter."
+                rc=1
+              else
+                echo "::warning::Minst én lockfil kunne ikke leses av osv-scanner. Den er ikke skannet."
+              fi
+            fi
+            exit "$rc"
+          }
 
           # Nye funn = i HEAD, men ikke i basen (samme fil, pakkeversjon og id). Uten diff er alt «nytt».
           # FILENAME==ARGV[1], ikke NR==FNR: med tom base-fil er NR==FNR sann også for HEAD-filen.
           awk -F'\t' 'FILENAME==ARGV[1]{b[$1 FS $2 FS $3]=1;next} !(($1 FS $2 FS $3) in b)' "$basen" "$hode" > "$arb/nye.tsv"
           antall=$(wc -l < "$arb/nye.tsv" | tr -d ' ')
-          if [ "$antall" = 0 ]; then echo "Ingen nye sårbarheter i lockfilene."; exit 0; fi
+          if [ "$antall" = 0 ]; then echo "Ingen nye sårbarheter i lockfilene."; avslutt 0; fi
 
           # Én linje per pakke: antall, høyeste score og id-er.
           alvorlige=0
@@ -327,7 +348,7 @@ jobs:
           echo "OSV: $antall ${nye}funn, $alvorlige pakke(r) med CVSS >= $terskel."
           if [ "$diff" = true ] && [ "${FAIL_ON_OSV:-false}" = true ] && [ "$alvorlige" -gt 0 ]; then
             echo "::error::PR-en introduserer alvorlige sårbarheter (CVSS >= $terskel) i lockfilene. Oppdater pakken, eller dokumenter hvorfor den må bli."
-            exit 1
+            avslutt 1
           fi
-          exit 0
+          avslutt 0
           # <<< osv-skann
