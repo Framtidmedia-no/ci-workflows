@@ -51,7 +51,10 @@ permissions:
 jobs:
   review:
     name: Codex-review (rådgivende)
-    runs-on: ubuntu-latest
+    # Pinnet til 24.04: på ubuntu-latest (26.04) feiler codex-action sin drop-sudo med
+    # «Could not restrict access to /run/dbus/system_bus_socket». Ikke senk safety-strategy; bytt image når
+    # openai/codex-action støtter 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: >-
       github.event_name == 'pull_request' &&
