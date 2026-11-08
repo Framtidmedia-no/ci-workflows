@@ -30,6 +30,10 @@ on:
         description: Maks antall runder per review (kostnadstak)
         type: string
         default: '8'
+      debug:
+        description: Skriv full samtale til jobblogg (kun feilsøking; loggen er privat i kallerens repo)
+        type: boolean
+        default: false
     secrets:
       CLAUDE_REVIEW_API_KEY:
         required: false
@@ -74,6 +78,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CLAUDE_REVIEW_API_KEY }}
           github_token: ${{ github.token }}
+          show_full_output: ${{ inputs.debug }}
           claude_args: >-
             --max-turns ${{ inputs.max-turns }}
             --model ${{ inputs.model }}
