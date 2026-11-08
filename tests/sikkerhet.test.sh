@@ -142,8 +142,17 @@ echo "mer" > b.md; git add -A; git commit -qm urelatert
 forvent "osv: eksisterende sårbarhet som PR-en ikke rører blokkerer ikke, selv med fail-on-osv" 0 osv "$OB2" true
 forvent "osv: lockfil ny i PR-en (fantes ikke i base) regnes som nye funn" 1 osv "$OB0" true
 forvent "osv: push-hendelse varsler bare, uavhengig av fail-on-osv" 0 env EVENT=push BASE_SHA= FAIL_ON_OSV=true bash "$TMP/osv.sh"
-printf '#!/bin/sh\necho "osv.dev utilgjengelig" >&2\nexit 127\n' > "$TMP/osv-feil.sh"; chmod +x "$TMP/osv-feil.sh"
-forvent "osv: skannerkrasj/nettfeil gir advarsel og hopper over, ikke rød" 0 env OSV_BIN="$TMP/osv-feil.sh" EVENT=pull_request BASE_SHA="$OB1" FAIL_ON_OSV=true bash "$TMP/osv.sh"
+printf '#!/bin/sh\necho "Error: Post https://api.osv.dev/v1/querybatch: dial tcp: lookup api.osv.dev: no such host" >&2\nexit 127\n' > "$TMP/osv-nett.sh"; chmod +x "$TMP/osv-nett.sh"
+forvent "osv: nettfeil mot osv.dev gir advarsel og hopper over, selv med fail-on-osv" 0 env OSV_BIN="$TMP/osv-nett.sh" EVENT=pull_request BASE_SHA="$OB1" FAIL_ON_OSV=true bash "$TMP/osv.sh"
+# En lockfil som ikke lar seg lese er ikke en nettfeil: med fail-on-osv skal den stoppe PR-en (ellers kan en ødelagt lockfil skjule alt).
+git checkout -q -b parse "$OB1"; echo '{ ikke json' > package-lock.json; git add -A; git commit -qm ødelagt
+forvent "osv: lockfil som ikke kan leses stopper PR-en med fail-on-osv" 1 osv "$OB1" true
+forvent "osv: lockfil som ikke kan leses er bare advarsel i varsle-modus" 0 osv "$OB1" false
+# Funn i én lockfil skal ikke forsvinne fordi en annen ikke kunne leses.
+lock 4.17.15; mkdir -p pakke; cp package-lock.json pakke/package-lock.json; echo '{ ikke json' > package-lock.json; git add -A; git commit -qm "en god, en ødelagt"
+forvent "osv: funn i god lockfil teller selv om en annen er ødelagt" 1 osv "$OB1" true
+[ "$(osv "$OB1" false 2>&1 | grep -c '::warning.*lodash')" -ge 1 ] || feil "osv: funn i god lockfil ble borte da en annen var ødelagt"
+git checkout -q -
 cd "$REPO"
 
 echo "SIKKERHET-SELVTEST OK ($ok kontroller)"

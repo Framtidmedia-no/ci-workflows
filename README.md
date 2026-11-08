@@ -57,7 +57,8 @@ Basis-nivået i sikkerhetsstandarden. Tre jobber:
    Eksisterende sårbarheter rapporteres ikke og kan aldri gjøre en urelatert PR rød. Ved `push` og andre hendelser varsles alt,
    men jobben feiler aldri. `fail-on-osv: true` gjør **nye** funn med CVSS 7.0+ (HIGH/CRITICAL) til feil; standard er av
    (varsle-modus). Funn uten CVSS-score teller som advarsel. Feilhåndtering som for gitleaks: feil sjekksum gir rødt, mens
-   nedlastingsfeil og nettfeil mot osv.dev gir advarsel og hopp over. `osv` kommer i tillegg til `audit` (npm/pnpm bruker
+   nedlastingsfeil og nettfeil mot osv.dev gir advarsel og hopp over. En lockfil som ikke lar seg lese (ødelagt) er ikke en nettfeil:
+   med `fail-on-osv` stopper den PR-en, og funn i de andre lockfilene teller likevel. `osv` kommer i tillegg til `audit` (npm/pnpm bruker
    GitHubs advisory-database, OSV dekker flere kilder); `audit` vurderes fjernet når OSV har gått stabilt.
 
 Feilhåndtering er bevisst asymmetrisk: funn, ugyldig konfig og krasj gir rødt; **feil sjekksum gir rødt** (aldri fail-open mot en
