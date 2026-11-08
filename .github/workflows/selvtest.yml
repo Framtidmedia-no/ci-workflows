@@ -16,3 +16,12 @@ jobs:
         with:
           node-version: '24'
       - run: node --test tests/ssrf-drift.test.mjs
+  codex-review:
+    name: codex-review.yml validerer og poster bare trygge funn
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: python3 tests/codex-review.test.py
