@@ -207,3 +207,38 @@ jobs:
     needs: tre
     if: needs.tre.outputs.skip != 'true'
 ```
+
+## codex-review.yml — rådgivende AI-review (Gange-Rolv, GR-1733)
+
+Rådgivende review av hver pull request med OpenAI (`openai/codex-action`, SHA-pinnet). Den blokkerer aldri merge og skal ikke
+være en required check. Fork-PR-er, utkast, Renovate og Dependabot hoppes over, og uten nøkkel hopper den over seg selv.
+Dette er Gange-Rolv sin variant. Framtid Tech bruker `claude-review.yml` med en egen nøkkel, og de to deler aldri nøkkel.
+
+Kall fra et privat repo (`.github/workflows/codex-review.yml`), pinnet til SHA:
+
+```yaml
+name: Codex-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  codex-review:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/codex-review.yml@<SHA> # main
+    secrets:
+      OPENAI_REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
+```
+
+Nøkkelen `OPENAI_REVIEW_API_KEY` er en org-secret i `Gange-Rolv-AS` (Doppler `gange-rolv-review/prd`, org-sync til private repoer).
+Send den eksplisitt, aldri `secrets: inherit`. Valgfrie `with:`-inputs: `model` (default `gpt-5.5`), `effort` (default `medium`),
+`max-findings` (default `15`).
+
+Hvordan den er bygget: et steg henter diffen (`gh pr diff`) til en fil, Codex leser den i read-only-profil uten GitHub-token og
+svarer med JSON etter et fast skjema, og et siste steg validerer svaret og legger inn én review (filer må finnes i diffen, tak på
+antall og lengde, hemmeligheter fjernet). Modellen velger aldri kommando mot GitHub. Postelogikken testes i
+`tests/codex-review.test.py`, som kjøres av `selvtest.yml`.
