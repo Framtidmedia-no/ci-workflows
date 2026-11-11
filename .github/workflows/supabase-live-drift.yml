@@ -18,6 +18,11 @@
 # tests_user_metadata_unntak. Finnes tabellen public.offentlige_tabeller i den live databasen (sql/offentlige-tabeller.sql
 # i framtid-security), regnes hver rad som using(true)-unntak for SELECT. Finnes ikke konfigfila, gjelder ingen unntak.
 #
+# Utvidede, RÅDGIVENDE sjekker (FRA-1896): `with: utvidet: true` legger til nettverk (Network Restrictions), SSL enforcement,
+# auth-herding, roller med innlogging/superbruker, offentlige buckets, token-kolonner uten kryptering/hash (bare antall rader,
+# aldri verdier) og logging (log_connections, pgaudit). De gir ::warning:: og grønn jobb, aldri rød, til retrofit er ferdig for
+# repoet (FRA-1865). Standard er av, så eksisterende kallere påvirkes ikke. Unntak i _config.sqlinc: tests_rolle_unntak,
+# tests_bucket_unntak, tests_tokenkolonne_unntak (hver rad med kommentar om hvorfor og hvem som godkjente).
 # Utskriften har bare skjema- og objektnavn. Feil = rød jobb. Ingen varsel-saker opprettes her; en planlagt kjøring som
 # feiler gir GitHub-varsel til repoets eiere. Hver rad i unntakene skal ha en kommentar om hvorfor og hvem som godkjente det.
 #
@@ -64,6 +69,10 @@ on:
         description: 'Kommaseparerte kind som ikke skal sjekkes, f.eks. "user_metadata"'
         type: string
         default: ''
+      utvidet:
+        description: 'Kjør de utvidede, rådgivende sjekkene (nettverk, SSL, auth, roller, buckets, token-kolonner, logging). Gir varsel, aldri rød jobb (FRA-1896)'
+        type: boolean
+        default: false
       runs-on:
         description: 'JSON for runs-on, f.eks. "ubuntu-latest" eller output fra velg-runner.yml'
         type: string
@@ -97,6 +106,7 @@ jobs:
           WORKDIR: ${{ inputs.working-directory }}
           CONFIG_FILE: ${{ inputs.config-file }}
           HOPP_OVER: ${{ inputs.hopp-over }}
+          UTVIDET: ${{ inputs.utvidet }}
         run: |
           # >>> drift
           set -euo pipefail
@@ -196,7 +206,7 @@ jobs:
           }
 
           // Unntak fra pgTAP-konfigen: «insert into tests_x values (...), (...)». Kommentarer fjernes først.
-          const unntak = { tests_rls_unntak: [], tests_anon_funksjon_allowlist: [], tests_using_true_unntak: [], tests_anon_skriv_unntak: [], tests_user_metadata_unntak: [] }
+          const unntak = { tests_rolle_unntak: [], tests_bucket_unntak: [], tests_tokenkolonne_unntak: [], tests_rls_unntak: [], tests_anon_funksjon_allowlist: [], tests_using_true_unntak: [], tests_anon_skriv_unntak: [], tests_user_metadata_unntak: [] }
           const konfig = path.join(env.WORKDIR || '.', env.CONFIG_FILE || '')
           if (env.CONFIG_FILE && fs.existsSync(konfig)) {
             const tekst = fs.readFileSync(konfig, 'utf8').split('\n').map((l) => l.replace(/--.*$/, '')).join('\n')
@@ -214,7 +224,81 @@ jobs:
           const funksjoner = sett('tests_anon_funksjon_allowlist')
           const skrivUnntak = sett('tests_anon_skriv_unntak')
           const metaUnntak = sett('tests_user_metadata_unntak')
+          const unntakUtvidet = { roller: new Set(), buckets: new Set(), tokenkolonner: new Set() }
+          for (const r of unntak.tests_rolle_unntak) unntakUtvidet.roller.add(r[0])
+          for (const r of unntak.tests_bucket_unntak) unntakUtvidet.buckets.add(r[0])
+          for (const r of unntak.tests_tokenkolonne_unntak) unntakUtvidet.tokenkolonner.add(r[0])
           const trueUnntak = new Set(unntak.tests_using_true_unntak.map((r) => `${r[0]}|${r[1]}`))
+
+          // ---- Utvidede sjekker (FRA-1896): RÅDGIVENDE. Gir varsel og grønn jobb, aldri exit 1. ----
+          // Bare metadata: katalognavn, innstillinger og antall rader. Aldri verdier fra brukertabeller.
+          async function api(sti) {
+            const svar = await fetch(`${base}/v1/projects/${ref}${sti}`, { headers: { Authorization: `Bearer ${token}` } })
+            if (!svar.ok) throw new Error(`Management API ${sti} svarte ${svar.status}.`)
+            return svar.json()
+          }
+          const INTERNE_ROLLER = '^(supabase_|pgbouncer$|authenticator$|dashboard_user$|cli_login_|pgsodium|postgres$|pg_)'
+          const TOKENNAVN = '(token|secret|api_key|apikey|access_key|refresh_token|password)'
+          // Kryptert (enc:v2:, encv1:), SHA-256-hash (64 hex) eller bcrypt regnes som ikke-klartekst.
+          const IKKE_KLARTEKST = '^(enc:v2:|encv1:|[0-9a-f]{64}$|\\$2[aby]\\$)'
+          async function utvidet(unntakUtvidet) {
+            const funn = []
+            const trygt = async (navn, f) => {
+              try { await f() } catch (e) { funn.push({ kind: 'sjekk_feilet', navn, detalj: e instanceof Error ? e.message : String(e) }) }
+            }
+            const unntatt = (liste, navn) => unntakUtvidet[liste].has(navn)
+            await trygt('nettverk', async () => {
+              const n = await api('/network-restrictions')
+              const cidrs = [...(n?.config?.dbAllowedCidrs ?? []), ...(n?.config?.dbAllowedCidrsV6 ?? [])]
+              if (cidrs.length === 0 || cidrs.includes('0.0.0.0/0') || cidrs.includes('::/0')) {
+                funn.push({ kind: 'nettverk_apent', navn: 'database', detalj: 'Network Restrictions mangler eller tillater alle IP-er' })
+              }
+            })
+            await trygt('ssl', async () => {
+              const s = await api('/ssl-enforcement')
+              if (s?.currentConfig?.database !== true) funn.push({ kind: 'ssl_ikke_pavunget', navn: 'database', detalj: 'SSL enforcement er av' })
+            })
+            await trygt('auth', async () => {
+              const a = await api('/config/auth')
+              if (!(a.password_min_length >= 10)) funn.push({ kind: 'auth_passordlengde', navn: 'auth', detalj: `min ${a.password_min_length ?? 'ukjent'}, krav 10` })
+              if (a.password_hibp_enabled !== true) funn.push({ kind: 'auth_lekket_passord', navn: 'auth', detalj: 'lekket-passord-sjekk er av' })
+              if (!(a.jwt_exp <= 3600)) funn.push({ kind: 'auth_jwt_utloep', navn: 'auth', detalj: `jwt_exp ${a.jwt_exp ?? 'ukjent'}, krav høyst 3600` })
+              if (a.mfa_totp_enroll_enabled !== true) funn.push({ kind: 'auth_mfa', navn: 'auth', detalj: 'TOTP-MFA er ikke slått på (dokumenter valget)' })
+            })
+            await trygt('roller', async () => {
+              for (const r of await kjor(`select rolname, rolsuper from pg_roles where rolcanlogin and rolname !~ '${INTERNE_ROLLER}' order by 1`)) {
+                if (unntatt('roller', r.rolname)) continue
+                funn.push({ kind: r.rolsuper ? 'rolle_superbruker' : 'rolle_innlogging', navn: r.rolname, detalj: r.rolsuper ? 'superbruker med innlogging' : 'rolle med innlogging (skal være kjent og ha minste rettighet)' })
+              }
+            })
+            await trygt('buckets', async () => {
+              for (const b of await kjor("select id from storage.buckets where public order by 1")) {
+                if (!unntatt('buckets', b.id)) funn.push({ kind: 'bucket_offentlig', navn: b.id, detalj: 'offentlig bucket uten dokumentert unntak' })
+              }
+            })
+            await trygt('token_kolonner', async () => {
+              const kol = await kjor(`select table_name, column_name from information_schema.columns where table_schema = 'public' and data_type in ('text', 'character varying') and column_name ~* '${TOKENNAVN}' order by 1, 2`)
+              for (const k of kol) {
+                if (!/^[a-z0-9_]+$/i.test(k.table_name) || !/^[a-z0-9_]+$/i.test(k.column_name)) continue
+                if (unntatt('tokenkolonner', `${k.table_name}.${k.column_name}`)) continue
+                const [t] = await kjor(`select count(*)::int as n from public."${k.table_name}" where "${k.column_name}" is not null and "${k.column_name}" <> '' and "${k.column_name}" !~ '${IKKE_KLARTEKST}'`)
+                if (t && t.n > 0) funn.push({ kind: 'token_klartekst', navn: `${k.table_name}.${k.column_name}`, detalj: `${t.n} rader ser ikke kryptert eller hashet ut` })
+              }
+            })
+            await trygt('logging', async () => {
+              const [l] = await kjor("select current_setting('log_connections', true) as v")
+              if (!l || !['on', 'true', 'all'].includes(String(l.v ?? '').toLowerCase()) && !/connections|receipt|authentication/.test(String(l.v ?? ''))) {
+                funn.push({ kind: 'logging_tilkoblinger', navn: 'log_connections', detalj: `verdi «${l?.v ?? 'ukjent'}», skal være på` })
+              }
+              const [p] = await kjor("select exists(select 1 from pg_extension where extname = 'pgaudit') as v")
+              if (!p || p.v !== true) funn.push({ kind: 'logging_pgaudit', navn: 'pgaudit', detalj: 'utvidelsen er ikke aktivert' })
+            })
+            console.log(`Utvidede sjekker (rådgivende): ${funn.length} funn.`)
+            for (const f of funn) console.log(`::warning::${f.kind}: ${f.navn} (${f.detalj})`)
+            if (env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `### Utvidede sjekker, rådgivende (${funn.length} funn)\n\nBlokkerer ikke. Blir påkrevde per repo når retrofit er ferdig (FRA-1865).\n\n${funn.map((f) => `- \`${f.kind}: ${f.navn}\` ${f.detalj}`).join('\n') || '- ingen funn'}\n`)
+            }
+          }
 
           async function main() {
             const hoppOver = new Set((env.HOPP_OVER || '').split(',').map((s) => s.trim()).filter(Boolean))
@@ -242,6 +326,7 @@ jobs:
             const nye = aktive.filter((r) => !erUnntatt(r))
             const miljo = env.MILJO || 'live'
             console.log(`Live-drift ${miljo}: ${rader.length} treff, ${aktive.length - nye.length} unntatt (${registerAntall} fra offentlige_tabeller), ${nye.length} nye.`)
+            if (env.UTVIDET === 'true') await utvidet(unntakUtvidet)
             if (nye.length > 0) {
               const linjer = nye.map((r) => `${r.kind}: ${r.navn}${r.detalj ? ` (${r.detalj})` : ''}`)
               for (const l of linjer) console.error(`::error::${l}`)
