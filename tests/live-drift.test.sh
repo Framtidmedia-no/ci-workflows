@@ -26,9 +26,11 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 [ "${READY:-0}" = "1" ] || feil "Postgres ble ikke klar"
+sqla() { docker exec -i "$NAVN" psql -U supabase_admin -d postgres -q -v ON_ERROR_STOP=1 -c "$1" >/dev/null || feil "sql (admin) feilet: $1"; }
 sql() { docker exec -i "$NAVN" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1 -c "$1" >/dev/null || feil "sql feilet: $1"; }
 
-node "$RAD/tests/live-drift-api.mjs" "$PORT" "$NAVN" "$TOKEN" "$REF" > "$TMP/api.log" 2>&1 & API_PID=$!; disown "$API_PID" 2>/dev/null
+mkdir -p "$TMP/api"
+node "$RAD/tests/live-drift-api.mjs" "$PORT" "$NAVN" "$TOKEN" "$REF" "$TMP/api" > "$TMP/api.log" 2>&1 & API_PID=$!; disown "$API_PID" 2>/dev/null
 for _ in $(seq 1 30); do grep -q klar "$TMP/api.log" && break; sleep 0.3; done
 grep -q klar "$TMP/api.log" || feil "falsk API startet ikke"
 
@@ -38,7 +40,7 @@ kjor() { # kjor <modus> -> bruker $KONF som prosjektets konfig (tom = ingen)
   rm -f "$TMP/p/supabase/tests/database/_config.sqlinc"
   [ -n "${KONF:-}" ] && printf '%s\n' "$KONF" > "$TMP/p/supabase/tests/database/_config.sqlinc"
   env SUPABASE_ACCESS_TOKEN="${TOK:-$TOKEN}" REF_INPUT="${REFIN:-$REF}" REF_SECRET="" MILJO=selvtest WORKDIR="$TMP/p" \
-    CONFIG_FILE=supabase/tests/database/_config.sqlinc HOPP_OVER="${HOPP:-}" DRIFT_API_BASE="http://127.0.0.1:$PORT" GITHUB_STEP_SUMMARY="$TMP/sammendrag.md" \
+    CONFIG_FILE=supabase/tests/database/_config.sqlinc HOPP_OVER="${HOPP:-}" UTVIDET="${UTVIDET:-false}" DRIFT_API_BASE="http://127.0.0.1:$PORT" GITHUB_STEP_SUMMARY="$TMP/sammendrag.md" \
     bash "$TMP/drift.sh" 2>&1
 }
 forvent() { # forvent <navn> <exit> [tekst som skal stå i utskriften]
@@ -113,4 +115,58 @@ sql "grant insert on public.ordre to anon"
 ut="$(kjor)"; grep -q "HEMMELIG-KUNDENAVN" <<<"$ut" && feil "radinnhold lekket til utskriften"
 echo "  ok: ingen radinnhold i utskriften"; ok=$((ok+1))
 [ -s "$TMP/sammendrag.md" ] && ! grep -q "HEMMELIG-KUNDENAVN" "$TMP/sammendrag.md" || feil "sammendraget mangler eller lekker"
+echo "== Utvidede sjekker (FRA-1896) er rådgivende: varsler, men aldri rød jobb"
+sqla "create schema if not exists storage; create table if not exists storage.buckets (id text primary key, public boolean not null default false); grant all on storage.buckets to postgres"
+sqla "alter system set log_connections = 'off'"; sqla "select pg_reload_conf()"
+sql "revoke insert on public.ordre from anon" ; sql "delete from public.ordre"
+sql "drop policy if exists r on public.ref"
+ok_api() { printf '%s' '{"config":{"dbAllowedCidrs":["203.0.113.7/32"],"dbAllowedCidrsV6":[]}}' > "$TMP/api/nettverk.json"
+  printf '%s' '{"currentConfig":{"database":true}}' > "$TMP/api/ssl.json"
+  printf '%s' '{"password_min_length":12,"password_hibp_enabled":true,"jwt_exp":3600,"mfa_totp_enroll_enabled":true}' > "$TMP/api/auth.json"; }
+ok_api
+UTVIDET=false forvent "utvidet av: ingen utvidede sjekker kjører" 0 "OK: ingen nye funn"
+ut="$(UTVIDET=false kjor)"; grep -q "Utvidede sjekker" <<<"$ut" && feil "utvidede sjekker kjørte uten å være slått på"
+UTVIDET=true forvent "utvidet på: åpne funn gir varsel, men exit 0" 0 "Utvidede sjekker (rådgivende)"
+UTVIDET=true forvent "log_connections av flagges" 0 "logging_tilkoblinger"
+UTVIDET=true forvent "manglende pgaudit flagges" 0 "logging_pgaudit"
+sqla "alter system set log_connections = 'on'"; sqla "select pg_reload_conf()"
+printf '%s' '{"config":{"dbAllowedCidrs":["0.0.0.0/0"],"dbAllowedCidrsV6":["::/0"]}}' > "$TMP/api/nettverk.json"
+UTVIDET=true forvent "åpent nettverk gir varsel" 0 "nettverk_apent"
+printf '%s' '{"currentConfig":{"database":false}}' > "$TMP/api/ssl.json"
+UTVIDET=true forvent "SSL av gir varsel" 0 "ssl_ikke_pavunget"
+printf '%s' '{"password_min_length":6,"password_hibp_enabled":false,"jwt_exp":604800,"mfa_totp_enroll_enabled":false}' > "$TMP/api/auth.json"
+UTVIDET=true forvent "svak auth-konfig gir fire varsler" 0 "auth_passordlengde"
+UTVIDET=true forvent "lekket-passord av" 0 "auth_lekket_passord"
+UTVIDET=true forvent "lang JWT-levetid" 0 "auth_jwt_utloep"
+UTVIDET=true forvent "MFA av" 0 "auth_mfa"
+ok_api
+sqla "create role app_inn login password 'x'; create role su_inn login superuser password 'x'"
+UTVIDET=true forvent "rolle med innlogging flagges" 0 "rolle_innlogging: app_inn"
+UTVIDET=true forvent "superbruker flagges" 0 "rolle_superbruker: su_inn"
+ut="$(KONF="insert into tests_rolle_unntak values ('app_inn') on conflict do nothing; -- backup, godkjent i test" UTVIDET=true kjor)"
+grep -q "rolle_innlogging: app_inn" <<<"$ut" && feil "unntatt rolle ble likevel flagget"
+grep -q "rolle_superbruker: su_inn" <<<"$ut" || feil "superbruker forsvant med rolle-unntaket for en annen rolle"
+echo "  ok: rolle-unntak gjenbrukes"; ok=$((ok+1))
+sqla "drop role app_inn; drop role su_inn"
+sql "insert into storage.buckets values ('logoer', true), ('privat', false)"
+UTVIDET=true forvent "offentlig bucket flagges" 0 "bucket_offentlig: logoer"
+ut="$(UTVIDET=true kjor)"; grep -q "bucket_offentlig: privat" <<<"$ut" && feil "privat bucket ble flagget"
+ut="$(KONF="insert into tests_bucket_unntak values ('logoer') on conflict do nothing; -- offentlige logoer, ingen persondata" UTVIDET=true kjor)"
+grep -q "bucket_offentlig: logoer" <<<"$ut" && feil "unntatt bucket ble likevel flagget"
+echo "  ok: bucket-unntak gjenbrukes"; ok=$((ok+1))
+sql "delete from storage.buckets"
+sql "create table public.integrasjon (id int, access_token text, refresh_token text, passord_hash text, api_key text); alter table public.integrasjon enable row level security"
+sql "insert into public.integrasjon values (1, 'ya29.KLARTEKST-TOKEN-VERDI', 'enc:v2:k1:abc.def.ghi', '\$2b\$10\$abcdefghijklmnopqrstuv', null)"
+UTVIDET=true forvent "token i klartekst flagges" 0 "token_klartekst: integrasjon.access_token"
+ut="$(UTVIDET=true kjor)"
+grep -q "KLARTEKST-TOKEN-VERDI" <<<"$ut" && feil "tokenverdi lekket til utskriften"
+grep -q "KLARTEKST-TOKEN-VERDI" "$TMP/sammendrag.md" && feil "tokenverdi lekket til sammendraget"
+grep -q "token_klartekst: integrasjon.refresh_token" <<<"$ut" && feil "kryptert token ble flagget"
+grep -q "integrasjon.api_key" <<<"$ut" && feil "tom kolonne ble flagget"
+echo "  ok: kryptert/hash/tom flagges ikke, og ingen tokenverdi i utskrift"; ok=$((ok+1))
+ut="$(KONF="insert into tests_tokenkolonne_unntak values ('integrasjon.access_token') on conflict do nothing; -- testunntak" UTVIDET=true kjor)"
+grep -q "token_klartekst: integrasjon.access_token" <<<"$ut" && feil "unntatt tokenkolonne ble flagget"
+echo "  ok: tokenkolonne-unntak gjenbrukes"; ok=$((ok+1))
+rm -f "$TMP/api/ssl.json"
+UTVIDET=true forvent "API-feil gir sjekk_feilet, ikke krasj" 0 "sjekk_feilet: ssl"
 echo "LIVE-DRIFT-SELVTEST OK ($ok kontroller)"
