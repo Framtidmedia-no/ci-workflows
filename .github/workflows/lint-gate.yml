@@ -68,12 +68,12 @@ jobs:
   # for at valget skal kunne se køen; uten det brukes GitHub sine runnere. Se velg-runner.yml.
   runner:
     name: Velg runner
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@3398ce4b1f95faef89b3dca562afd9cde9c95e7c # main
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@0400d07f8b5674180aecef65602832e31a5a677c # main
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.etiketter) }}
+    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.etiketter) }}
     timeout-minutes: 20
     env:
       WD: ${{ inputs.working-directory }}

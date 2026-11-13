@@ -105,7 +105,7 @@ jobs:
 
   pgtap:
     name: Supabase pgTAP og lint
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 20
     defaults:
       run:

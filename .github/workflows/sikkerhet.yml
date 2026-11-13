@@ -83,7 +83,7 @@ env:
 jobs:
   gitleaks:
     name: Hemmeligheter (gitleaks)
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -193,7 +193,7 @@ jobs:
   audit:
     name: Avhengigheter (audit)
     if: ${{ !inputs.full-historikk }}
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -220,7 +220,7 @@ jobs:
   osv:
     name: Nye sårbarheter i lockfiler (OSV)
     if: ${{ !inputs.full-historikk }}
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
