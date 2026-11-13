@@ -9,7 +9,7 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const KLASSER = ['bug', 'støy', 'infrastruktur', 'uklar']
-const FELT = ['klasse', 'sikkerhet', 'filer', 'rotårsak', 'reproduksjon']
+const FELT = ['klasse', 'sikkerhet', 'filer', 'rotarsak', 'reproduksjon']
 const MAKS_TEKST = 500
 const MAKS_FILER = 10
 const MAKS_STI = 300
@@ -66,7 +66,7 @@ export function validerTriage(tekst, repoRot) {
   if (typeof data.sikkerhet !== 'number' || !Number.isFinite(data.sikkerhet) || data.sikkerhet < 0 || data.sikkerhet > 1) {
     return { ok: false, feil: 'sikkerhet må være et tall mellom 0 og 1' }
   }
-  for (const k of ['rotårsak', 'reproduksjon']) {
+  for (const k of ['rotarsak', 'reproduksjon']) {
     if (typeof data[k] !== 'string') return { ok: false, feil: `${k} må være tekst` }
     if (data[k].length > MAKS_TEKST) return { ok: false, feil: `${k} er lengre enn ${MAKS_TEKST} tegn` }
     if (NOKKEL.test(data[k])) return { ok: false, feil: `${k} inneholder noe som ligner en nøkkel` }
@@ -87,7 +87,7 @@ export function validerTriage(tekst, repoRot) {
 
   return {
     ok: true,
-    data: { klasse: data.klasse, sikkerhet: data.sikkerhet, filer: [...data.filer], rotårsak: data.rotårsak, reproduksjon: data.reproduksjon },
+    data: { klasse: data.klasse, sikkerhet: data.sikkerhet, filer: [...data.filer], rotarsak: data.rotarsak, reproduksjon: data.reproduksjon },
   }
 }
 

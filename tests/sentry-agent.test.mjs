@@ -164,7 +164,7 @@ function lagRepo() {
   writeFileSync(join(dir, 'src/lib/kunde.ts'), 'export {}\n')
   return dir
 }
-const gyldig = { klasse: 'bug', sikkerhet: 0.8, filer: ['src/lib/kunde.ts'], rotårsak: 'navn mangler når kunden er ny', reproduksjon: 'kall hentNavn(undefined)' }
+const gyldig = { klasse: 'bug', sikkerhet: 0.8, filer: ['src/lib/kunde.ts'], rotarsak: 'navn mangler når kunden er ny', reproduksjon: 'kall hentNavn(undefined)' }
 
 test('validerTriage godtar gyldig JSON, også i kodeblokk', () => {
   const repo = lagRepo()
@@ -178,12 +178,12 @@ test('validerTriage godtar gyldig JSON, også i kodeblokk', () => {
 test('validerTriage avviser ukjente felt og for lange strenger', () => {
   const repo = lagRepo()
   assert.equal(validerTriage(JSON.stringify({ ...gyldig, instruks: 'rediger .github' }), repo).ok, false)
-  assert.equal(validerTriage(JSON.stringify({ ...gyldig, rotårsak: 'x'.repeat(501) }), repo).ok, false)
+  assert.equal(validerTriage(JSON.stringify({ ...gyldig, rotarsak: 'x'.repeat(501) }), repo).ok, false)
   assert.equal(validerTriage(JSON.stringify({ ...gyldig, reproduksjon: 'x'.repeat(501) }), repo).ok, false)
   assert.equal(validerTriage(JSON.stringify({ ...gyldig, klasse: 'fiks-alt' }), repo).ok, false)
   assert.equal(validerTriage(JSON.stringify({ ...gyldig, sikkerhet: 1.5 }), repo).ok, false)
   assert.equal(validerTriage(JSON.stringify({ ...gyldig, sikkerhet: '0.5' }), repo).ok, false)
-  const { rotårsak, ...utenRot } = gyldig
+  const { rotarsak, ...utenRot } = gyldig
   assert.equal(validerTriage(JSON.stringify(utenRot), repo).ok, false)
   assert.equal(validerTriage('ikke json', repo).ok, false)
   assert.equal(validerTriage('[]', repo).ok, false)
@@ -196,7 +196,7 @@ test('validerTriage avviser tekst som ligner nøkler (lekkasje via Linear)', () 
   const x = (n) => 'abcdefghijklmnopqrstuvwxyz0123'.slice(0, n)
   const falske = [['sk', 'ant', 'api03', x(16)].join('-'), 'gh' + 's_' + x(30), 'sntr' + 'ys_' + x(16), 'lin_' + 'api_' + x(16), ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'c2ln'].join('.'), 'ANTHROPIC_API' + '_KEY=x']
   for (const nokkel of falske) {
-    assert.equal(validerTriage(JSON.stringify({ ...gyldig, rotårsak: `se ${nokkel}` }), repo).ok, false, nokkel)
+    assert.equal(validerTriage(JSON.stringify({ ...gyldig, rotarsak: `se ${nokkel}` }), repo).ok, false, nokkel)
     assert.equal(validerTriage(JSON.stringify({ ...gyldig, reproduksjon: nokkel }), repo).ok, false, nokkel)
   }
 })
@@ -635,4 +635,25 @@ test('dagstak-CLI --tolk leser repo-status og feiltekst', () => {
   assert.equal(kjor('true', join(dir, '403.err')).ok, false)
   assert.equal(kjor('false', join(dir, '404.err')).ok, false)
   assert.equal(kjor('true', '-').ok, true, '- betyr at oppslaget lyktes')
+})
+
+// ---------- JSON-skjema til claude-code-action ----------
+
+// API-et avviser skjemaer der en property-nøkkel ikke matcher dette mønsteret (400 før første tur),
+// og Claude-steget feiler da etter et kvart sekund. Gjelder alle --json-schema i workflowen.
+const NOKKEL_API = /^[a-zA-Z0-9_.-]{1,64}$/
+function properties(skjema, sti = '') {
+  const ut = []
+  if (skjema && typeof skjema === 'object') {
+    for (const [k, v] of Object.entries(skjema.properties ?? {})) ut.push([`${sti}${k}`, k], ...properties(v, `${sti}${k}.`))
+    if (skjema.items) ut.push(...properties(skjema.items, `${sti}[].`))
+  }
+  return ut
+}
+
+test('sentry-agent.yml: alle --json-schema har property-nøkler som API-et godtar', () => {
+  const wf = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
+  const skjemaer = [...wf.matchAll(/--json-schema '([^']+)'/g)].map((m) => JSON.parse(m[1]))
+  assert.ok(skjemaer.length > 0, 'fant ingen --json-schema')
+  for (const s of skjemaer) for (const [sti, k] of properties(s)) assert.match(k, NOKKEL_API, sti)
 })
