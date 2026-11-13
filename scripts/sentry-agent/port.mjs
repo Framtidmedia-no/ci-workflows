@@ -105,6 +105,18 @@ export function sjekkPatch({ numstat, patch, kilde }) {
   return { ok: grunner.length === 0, grunner }
 }
 
+// CI-status for ÉN fast head-SHA (check-runs og commit-statuser fra API-et). Ingen sjekker er ikke grønt.
+const OK_KONKLUSJON = new Set(['success', 'skipped', 'neutral'])
+export function vurderCi(checkRuns, statuser) {
+  const runs = Array.isArray(checkRuns) ? checkRuns.filter(Boolean) : []
+  const st = Array.isArray(statuser) ? statuser.filter(Boolean) : []
+  if (runs.length + st.length === 0) return { ferdig: false, gronn: false }
+  const ferdig = runs.every((r) => r.status === 'completed') && st.every((s) => s.state !== 'pending')
+  if (!ferdig) return { ferdig: false, gronn: false }
+  const gronn = runs.every((r) => OK_KONKLUSJON.has(r.conclusion)) && st.every((s) => s.state === 'success')
+  return { ferdig: true, gronn }
+}
+
 // Testbeviset er aldri nok alene: agenten skrev testen selv. Grønn CI og vellykket claude-review uten
 // blokkerende funn kreves alltid i tillegg.
 export function vurderPort({ filer, testbevis, ciGronn, reviewOk, automerge, harDev, kilde }) {
@@ -131,7 +143,11 @@ export function vurderPort({ filer, testbevis, ciGronn, reviewOk, automerge, har
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const inn = readFileSync(0, 'utf8')
-  if (process.argv[2] === '--sjekk-patch') {
+  if (process.argv[2] === '--ci') {
+    // node port.mjs --ci < {checkRuns, statuser}
+    const { checkRuns, statuser } = JSON.parse(inn)
+    process.stdout.write(JSON.stringify(vurderCi(checkRuns, statuser)) + '\n')
+  } else if (process.argv[2] === '--sjekk-patch') {
     // node port.mjs --sjekk-patch <patchfil> [kildeJSON] < "git apply --numstat -z <patchfil>"
     const kilde = process.argv[4] ? JSON.parse(process.argv[4]) : null
     process.stdout.write(JSON.stringify(sjekkPatch({ numstat: inn, patch: readFileSync(process.argv[3], 'utf8'), kilde })) + '\n')
