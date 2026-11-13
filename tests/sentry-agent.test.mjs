@@ -657,3 +657,15 @@ test('sentry-agent.yml: alle --json-schema har property-nøkler som API-et godta
   assert.ok(skjemaer.length > 0, 'fant ingen --json-schema')
   for (const s of skjemaer) for (const [sti, k] of properties(s)) assert.match(k, NOKKEL_API, sti)
 })
+
+test('tellKjoringer teller bare agent-kjøringer (repository_dispatch), ikke sentry-lukk ved PR-merge', () => {
+  const runs = [
+    { id: 1, created_at: '2026-11-13T08:00:00Z', event: 'repository_dispatch' },
+    { id: 2, created_at: '2026-11-13T09:00:00Z', event: 'pull_request' },
+    { id: 3, created_at: '2026-11-13T10:00:00Z', event: 'pull_request_target' },
+    { id: 4, created_at: '2026-11-13T11:00:00Z' },
+    { id: 5, created_at: '2026-11-13T12:00:00Z', event: 'workflow_dispatch' },
+  ]
+  // Ukjent event (manglende felt) og andre manuelle utløsere telles: tellingen feiler mot den trygge siden.
+  assert.equal(tellKjoringer(runs, { idag: '2026-11-13', egenId: 0 }), 3)
+})

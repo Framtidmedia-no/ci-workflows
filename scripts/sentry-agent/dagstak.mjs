@@ -28,6 +28,8 @@ export function tellKjoringer(runs, { idag, egenId }) {
     if (!Number.isFinite(tid)) continue
     if (new Date(tid).toISOString().slice(0, 10) !== idag) continue
     if (String(r.id) === String(egenId)) continue
+    // Kalleren kjører også ved PR-merge (sentry-lukk). De kjøringene bruker ingen agent og skal ikke spise av taket.
+    if (r.event === 'pull_request' || r.event === 'pull_request_target') continue
     sett.add(String(r.id))
   }
   return sett.size
