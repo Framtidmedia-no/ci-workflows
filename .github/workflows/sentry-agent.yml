@@ -258,10 +258,15 @@ jobs:
             [ ${#repoer[@]} -gt 0 ] || continue
             [ -n "$token" ] || stopp "Mangler app-token for $org (${#repoer[@]} agent-repoer). Kan ikke telle kjøringer, stopper."
             for repo in "${repoer[@]}"; do
-              if ! GH_TOKEN="$token" gh api --paginate "repos/$repo/actions/workflows/sentry-agent.yml/runs?created=%3E%3D$idag&per_page=100" \
+              # Først: kan repoet nås med samme token? Bare da kan 404 på workflow-fila bety 0 kjøringer (tolkTelling).
+              if GH_TOKEN="$token" gh api "repos/$repo" --silent 2>/dev/null; then repo_ok=true; else repo_ok=false; fi
+              feil=-
+              if [ "$repo_ok" = "true" ] && ! GH_TOKEN="$token" gh api --paginate "repos/$repo/actions/workflows/sentry-agent.yml/runs?created=%3E%3D$idag&per_page=100" \
                   --jq '.workflow_runs[] | {id, created_at}' >> "$RUNNER_TEMP/runs.jsonl" 2> "$RUNNER_TEMP/runs.err"; then
-                grep -q 'HTTP 404' "$RUNNER_TEMP/runs.err" || stopp "Kunne ikke telle kjøringer i $repo. Stopper."
+                feil="$RUNNER_TEMP/runs.err"
               fi
+              tolk=$(node "$SA/scripts/sentry-agent/dagstak.mjs" --tolk "$repo_ok" "$feil")
+              [ "$(jq -r .ok <<<"$tolk")" = "true" ] || stopp "Dagstak: $(jq -r .grunn <<<"$tolk") ($repo). Stopper."
             done
           done
           vurdering=$(jq -s . "$RUNNER_TEMP/runs.jsonl" | node "$SA/scripts/sentry-agent/dagstak.mjs" "$idag" "$EGEN_RUN" "${TAK:-10}")
@@ -912,15 +917,22 @@ jobs:
           start=$(date +%s); gronn=false
           while :; do
             gaatt=$(( $(date +%s) - start ))
-            runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" --jq '.check_runs[] | {name, status, conclusion}' 2>/dev/null | jq -s . || echo '[]')
-            statuser=$(gh api "repos/$REPO/commits/$SHA/status" --jq '.statuses | map({state, context})' 2>/dev/null || echo '[]')
+            # Et feilet oppslag blir null, aldri «ingen sjekker»: vurderCi gir da ikke grønt («kunne ikke lese CI-status»).
+            if raa=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" --jq '.check_runs[] | {name, status, conclusion}' 2>/dev/null); then
+              runs=$(jq -s . <<<"$raa")
+            else
+              runs=null
+            fi
+            statuser=$(gh api "repos/$REPO/commits/$SHA/status" --jq '.statuses | map({state, context})' 2>/dev/null) || statuser=null
             ci=$(jq -n --argjson r "$runs" --argjson s "$statuser" '{checkRuns: $r, statuser: $s}' | node "$SA/scripts/sentry-agent/port.mjs" --ci)
+            grunn=$(jq -r '.grunn // ""' <<<"$ci")
+            [ -z "$grunn" ] || echo "::warning::$grunn (prøver igjen)"
             if [ "$(jq -r .ferdig <<<"$ci")" = "true" ]; then
               gronn=$(jq -r .gronn <<<"$ci")
               jq -r '.[] | "  \(.conclusion): \(.name)"' <<<"$runs"
               break
             fi
-            if [ "$(jq 'length' <<<"$runs")" -eq 0 ] && [ "$gaatt" -ge 300 ]; then echo "::warning::Ingen sjekker etter 5 min."; break; fi
+            if [ "$runs" != "null" ] && [ "$(jq 'length' <<<"$runs")" -eq 0 ] && [ "$gaatt" -ge 300 ]; then echo "::warning::Ingen sjekker etter 5 min."; break; fi
             if [ "$gaatt" -ge 1800 ]; then echo "::warning::CI ble ikke ferdig innen 30 min."; break; fi
             sleep 30
           done
