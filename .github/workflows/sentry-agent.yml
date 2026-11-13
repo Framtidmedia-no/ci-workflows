@@ -1070,6 +1070,10 @@ jobs:
           tekst="Sentry-agent: Linear $LINEAR_URL"
           [ -z "$PR_URL" ] || tekst="$tekst · PR $PR_URL"
           [ "$LOST" != "true" ] || tekst="$tekst · fiksen er merget til dev, saken er markert løst i neste release"
-          curl -sS --fail-with-body --max-time 30 -X POST -H "Authorization: Bearer $SENTRY_WRITE_TOKEN" -H 'Content-Type: application/json' \
-            "$SENTRY_API/organizations/$SENTRY_ORG/issues/$ISSUE_ID/comments/" -d "$(jq -n --arg t "$tekst" '{text:$t}')" >/dev/null
+          svar="$RUNNER_TEMP/sentry-kommentar.json"
+          kode=$(curl -sS --max-time 30 -o "$svar" -w '%{http_code}' -X POST -H "Authorization: Bearer $SENTRY_WRITE_TOKEN" -H 'Content-Type: application/json' \
+            "$SENTRY_API/organizations/$SENTRY_ORG/issues/$ISSUE_ID/comments/" -d "$(jq -n --arg t "$tekst" '{text:$t}')")
+          # Ny kjøring på samme sak gir samme tekst. Sentry avviser den med 400 «You have already posted that comment».
+          if [ "$kode" = 400 ] && grep -qi 'already posted' "$svar"; then echo "::notice::Samme kommentar finnes allerede i Sentry."; exit 0; fi
+          [[ "$kode" =~ ^2 ]] || { echo "::error::Sentry-kommentar feilet med HTTP $kode"; head -c 300 "$svar"; exit 1; }
           echo "$tekst"

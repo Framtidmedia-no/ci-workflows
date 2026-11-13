@@ -669,3 +669,14 @@ test('tellKjoringer teller bare agent-kjøringer (repository_dispatch), ikke sen
   // Ukjent event (manglende felt) og andre manuelle utløsere telles: tellingen feiler mot den trygge siden.
   assert.equal(tellKjoringer(runs, { idag: '2026-11-13', egenId: 0 }), 3)
 })
+
+test('sentry-agent.yml: Sentry-kommentaren tåler at samme kommentar finnes fra før', () => {
+  // Sentry svarer 400 «You have already posted that comment» på identisk tekst. Det skjer ved ny kjøring
+  // på samme sak og Linear-sak, og skal ikke gjøre jobben rød.
+  const wf = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
+  const start = wf.indexOf('- name: Kommenter i Sentry')
+  assert.ok(start > 0)
+  const steg = wf.slice(start, wf.indexOf('- name:', start + 10) > 0 ? wf.indexOf('- name:', start + 10) : undefined)
+  assert.match(steg, /already posted/i)
+  assert.doesNotMatch(steg, /--fail-with-body[^\n]*\n[^\n]*comments\/"[^\n]*>\/dev\/null/)
+})
