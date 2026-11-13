@@ -262,7 +262,7 @@ jobs:
               if GH_TOKEN="$token" gh api "repos/$repo" --silent 2>/dev/null; then repo_ok=true; else repo_ok=false; fi
               feil=-
               if [ "$repo_ok" = "true" ] && ! GH_TOKEN="$token" gh api --paginate "repos/$repo/actions/workflows/sentry-agent.yml/runs?created=%3E%3D$idag&per_page=100" \
-                  --jq '.workflow_runs[] | {id, created_at}' >> "$RUNNER_TEMP/runs.jsonl" 2> "$RUNNER_TEMP/runs.err"; then
+                  --jq '.workflow_runs[] | {id, created_at, event}' >> "$RUNNER_TEMP/runs.jsonl" 2> "$RUNNER_TEMP/runs.err"; then
                 feil="$RUNNER_TEMP/runs.err"
               fi
               tolk=$(node "$SA/scripts/sentry-agent/dagstak.mjs" --tolk "$repo_ok" "$feil")
