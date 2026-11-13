@@ -995,6 +995,27 @@ jobs:
           gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"
           echo "Merget $PR_URL ($SHA) til dev"
 
+      # Bare når agenten selv har merget fiksen. «Løst i neste release»: hendelser fra releaser som allerede kjører
+      # (prod før promotering) åpner ikke saken igjen, men den gjenåpnes som regresjon hvis feilen kommer i en nyere release.
+      # Vanlig «resolved» ville blitt gjenåpnet av prod med en gang og gitt agenten en ny, unødvendig runde.
+      - name: Marker Sentry-saken løst i neste release
+        id: losning
+        if: steps.merge.outcome == 'success'
+        env:
+          SENTRY_WRITE_TOKEN: ${{ secrets.SENTRY_WRITE_TOKEN }}
+          ISSUE_ID: ${{ inputs.sentry_issue_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_ID" =~ ^[0-9]{1,20}$ ]] || { echo "::warning::Ugyldig issue-id, Sentry-saken er ikke markert løst."; exit 0; }
+          [ -n "${SENTRY_WRITE_TOKEN:-}" ] || { echo "::warning::Mangler SENTRY_WRITE_TOKEN, Sentry-saken er ikke markert løst."; exit 0; }
+          if svar=$(curl -sS --fail-with-body --max-time 30 -X PUT -H "Authorization: Bearer $SENTRY_WRITE_TOKEN" -H 'Content-Type: application/json' \
+            "$SENTRY_API/organizations/$SENTRY_ORG/issues/$ISSUE_ID/" -d '{"status":"resolved","statusDetails":{"inNextRelease":true}}'); then
+            echo "Sentry-sak $ISSUE_ID: $(jq -r '.status + " " + ((.statusDetails // {}) | keys | join(","))' <<<"$svar")"
+            echo "lost=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Sentry avviste «løst i neste release» (mangler prosjektet releaser?). Saken står uløst."
+          fi
+
       - name: Kommenter i Linear
         if: always()
         env:
@@ -1034,19 +1055,21 @@ jobs:
             -d "$(jq -n --arg i "$LINEAR_UUID" --arg b "$tekst" '{query:"mutation($i:String!,$b:String!){commentCreate(input:{issueId:$i,body:$b}){success}}",variables:{i:$i,b:$b}}')" >/dev/null
           echo "$tekst"
 
-      # Skrivetokenet brukes bare her, aldri i triage. Sentry-saken markeres aldri løst.
+      # Skrivetokenet brukes bare her, aldri i triage. Saken markeres løst bare i steget «Marker Sentry-saken løst i neste release».
       - name: Kommenter i Sentry
         if: always()
         env:
           SENTRY_WRITE_TOKEN: ${{ secrets.SENTRY_WRITE_TOKEN }}
           ISSUE_ID: ${{ inputs.sentry_issue_id }}
           LINEAR_URL: ${{ needs.triage.outputs.linear_url }}
+          LOST: ${{ steps.losning.outputs.lost }}
         run: |
           set -euo pipefail
           [[ "$ISSUE_ID" =~ ^[0-9]{1,20}$ ]] || exit 0
           if [ -z "${SENTRY_WRITE_TOKEN:-}" ] || [ -z "$LINEAR_URL" ]; then echo "::notice::Ingen Sentry-kommentar (mangler token eller Linear-sak)."; exit 0; fi
           tekst="Sentry-agent: Linear $LINEAR_URL"
           [ -z "$PR_URL" ] || tekst="$tekst · PR $PR_URL"
+          [ "$LOST" != "true" ] || tekst="$tekst · fiksen er merget til dev, saken er markert løst i neste release"
           curl -sS --fail-with-body --max-time 30 -X POST -H "Authorization: Bearer $SENTRY_WRITE_TOKEN" -H 'Content-Type: application/json' \
             "$SENTRY_API/organizations/$SENTRY_ORG/issues/$ISSUE_ID/comments/" -d "$(jq -n --arg t "$tekst" '{text:$t}')" >/dev/null
           echo "$tekst"
