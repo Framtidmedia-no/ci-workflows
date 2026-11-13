@@ -4,7 +4,7 @@ linear: FRA-1976
 
 # Sentry-agent: fra ny feil til testet fiks på dev
 
-**Dato:** 13.11.2026 · **Status:** utkast til godkjenning · **Eier:** Frank
+**Dato:** 13.11.2026 · **Status:** godkjent av Frank 13.11.2026 · **Eier:** Frank
 
 ## Hvorfor
 
@@ -117,19 +117,19 @@ Gange-Rolv-repoer uten Framtid-tilknytning holdes utenfor.
 
 ## Gange-Rolv og andre orger
 
-Sentry-orgen `framtid-tech-as` tar imot hendelser fra både Framtid- og Gange-Rolv-repoer (blant annet
-`gangerolv-drift`, `-catering`, `-gaver`, `-heimelaga`, `-no`, `eurosparmoa` og `myrvoll-lunde-it-drift`).
-Agenten dekker begge (Franks føring 13.11.2026).
+Sentry-orgen `framtid-tech-as` tar imot hendelser fra både Framtid- og Gange-Rolv-repoer.
 
-- `ci-workflows` er offentlig, og alle orgene (Framtidmedia-no, Gange-Rolv-AS, Framtid-Tech-Helge) ligger i samme
-  enterprise og tillater actionen, så samme gjenbrukbare workflow kan kalles fra alle.
-- Linear-team velges per repo: `GR` for Gange-Rolv, `FRA` for Framtid, og repoets `LINEAR_TEAM_KEY` overstyrer.
-- Gange-Rolv-repoer får egne Anthropic- og Sentry-nøkler i Gange-Rolvs Doppler-oppsett, ikke Framtids `felles`.
-  Da holdes kostnad og tilgang adskilt per selskap.
-- **Forutsetning (Franks avklaring):** Sentry-hendelser kan inneholde persondata (e-post, IP, URL-er).
-  Agenten sender dem til Anthropics API. For Gange-Rolv må det dekkes av Gange-Rolvs eget avtalegrunnlag med
-  Anthropic. For Framtid skal Anthropic stå i behandlingsprotokollen for dette formålet. Jobb 1 sender bare
-  stacktrace, feilmelding og breadcrumbs til modellen, ikke `user`, `request.headers` eller `contexts`.
+**Gange-Rolv holdes utenfor (Franks beslutning 13.11.2026).** Gange-Rolv bruker ChatGPT og har ingen avtale med
+Anthropic. Sentry-hendelser kan inneholde persondata, så de skal ikke sendes til Anthropics API. Disse Sentry-prosjektene
+står med `"agent": false` i `sentry-repoer.json`, og n8n-grenen sender aldri dispatch for dem:
+`gangerolv-catering`, `gangerolv-drift`, `gangerolv-gaver`, `gangerolv-heimelaga`, `gangerolv-no`, `eurosparmoa`.
+`myrvoll-lunde-it-drift` holdes også utenfor til eierforholdet er avklart (repoet lå tidligere i Gange-Rolv-AS).
+Standardverdien er «utenfor»: et nytt Sentry-prosjekt uten rad i fila får ingen agent.
+
+- `ci-workflows` er offentlig, og de aktuelle orgene ligger i samme enterprise og tillater actionen.
+- Linear-team per repo: `FRA`, med `LINEAR_TEAM_KEY` som overstyring (som i `dependency-sak.yml`).
+- **Personvern (Framtid):** Anthropic legges inn i behandlingsprotokollen for formålet «automatisk feilanalyse».
+  Jobb 1 sender bare stacktrace, feilmelding og breadcrumbs til modellen, ikke `user`, `request.headers` eller `contexts`.
 
 ## Avklaringer etter byggersjekk (Claudes valg)
 
