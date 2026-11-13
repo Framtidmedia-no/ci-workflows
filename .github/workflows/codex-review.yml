@@ -91,7 +91,16 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/review" "$GITHUB_WORKSPACE/.codex-review"
           gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only > "$RUNNER_TEMP/review/files.txt"
-          gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" | head -c 300000 > "$GITHUB_WORKSPACE/.codex-review/pr.diff"
+          # Skriv hele diffen til fil først og kutt etterpå. En pipe til head ga SIGPIPE
+          # (exit 141 under pipefail) når diffen var over grensen.
+          gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/review/full.diff"
+          MAKS=300000
+          TOTAL=$(wc -c < "$RUNNER_TEMP/review/full.diff" | tr -d ' ')
+          head -c "$MAKS" "$RUNNER_TEMP/review/full.diff" > "$GITHUB_WORKSPACE/.codex-review/pr.diff"
+          if [ "$TOTAL" -gt "$MAKS" ]; then
+            printf '\n\n[Diffen er kuttet ved %s byte av %s. Resten er ikke med i gjennomgangen.]\n' "$MAKS" "$TOTAL" >> "$GITHUB_WORKSPACE/.codex-review/pr.diff"
+            echo "::notice::Diffen er $TOTAL byte og kuttet ved $MAKS for Codex-gjennomgangen."
+          fi
           if [ ! -s "$GITHUB_WORKSPACE/.codex-review/pr.diff" ]; then
             echo "::notice::Tom diff. Hopper over review."
             echo "kjor=false" >> "$GITHUB_OUTPUT"
