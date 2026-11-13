@@ -15,7 +15,7 @@ import { lesNumstat, vurderPort } from '../scripts/sentry-agent/port.mjs'
 import { harBlokkerendeFunn } from '../scripts/sentry-agent/review-funn.mjs'
 import { sjekkOpphav } from '../scripts/sentry-agent/opphav.mjs'
 import { sjekkPatch, vurderCi } from '../scripts/sentry-agent/port.mjs'
-import { agentRepoer, tellKjoringer, vurderDagstak } from '../scripts/sentry-agent/dagstak.mjs'
+import { agentRepoer, tellKjoringer, tolkTelling, vurderDagstak } from '../scripts/sentry-agent/dagstak.mjs'
 
 const SKRIPT = new URL('../scripts/sentry-agent/', import.meta.url).pathname
 const KART = JSON.parse(readFileSync(new URL('../sentry-repoer.json', import.meta.url), 'utf8'))
@@ -534,7 +534,6 @@ test('vurderCi: grønn bare når alle check-runs og statuser på SHA-en er ferdi
   assert.deepEqual(vurderCi([run('test', 'completed', 'cancelled')], []), { ferdig: true, gronn: false })
   assert.deepEqual(vurderCi([run('test', 'completed', 'success')], [{ state: 'error' }]), { ferdig: true, gronn: false })
   assert.deepEqual(vurderCi([], []), { ferdig: false, gronn: false }, 'ingen sjekker er ikke grønt')
-  assert.deepEqual(vurderCi(null, null), { ferdig: false, gronn: false })
 })
 
 // ---------- ci_trygg / skalPublisere ----------
@@ -565,4 +564,50 @@ test('oppslag-CLI --publiser gir {push, grunn}', () => {
   assert.deepEqual(JSON.parse(r.stdout), { push: true, grunn: '' })
   const nei = spawnSync('node', [join(SKRIPT, 'oppslag.mjs'), '--publiser', 'finnes-ikke', join(dir, 'kart.json')], { encoding: 'utf8' })
   assert.equal(JSON.parse(nei.stdout).push, false)
+})
+
+// ---------- review 5: feil skal aldri bli «0» eller «grønt» ----------
+
+test('vurderCi: ulesbar CI-status er aldri grønn', () => {
+  const ulesbar = { ferdig: false, gronn: false, grunn: 'kunne ikke lese CI-status' }
+  assert.deepEqual(vurderCi(null, null), ulesbar)
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success')], null), ulesbar, 'statusoppslaget feilet')
+  assert.deepEqual(vurderCi(null, []), ulesbar, 'check-run-oppslaget feilet')
+  assert.deepEqual(vurderCi('tull', []), ulesbar)
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success')], { message: 'Bad credentials' }), ulesbar)
+})
+
+test('ci-CLI: null fra et feilet oppslag gir ikke grønt', () => {
+  const r = spawnSync('node', [join(SKRIPT, 'port.mjs'), '--ci'], { input: JSON.stringify({ checkRuns: [run('t', 'completed', 'success')], statuser: null }), encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(JSON.parse(r.stdout).gronn, false)
+})
+
+test('tolkTelling: 404 betyr 0 kjøringer bare når repoet kan nås', () => {
+  assert.deepEqual(tolkTelling({ repoOk: true, runsFeil: null }), { ok: true, grunn: '' })
+  assert.deepEqual(tolkTelling({ repoOk: true, runsFeil: 'gh: Not Found (HTTP 404)' }), { ok: true, grunn: '' })
+  for (const [inn, grunn] of [
+    [{ repoOk: false, runsFeil: null }, /kan ikke nå repoet/],
+    [{ repoOk: false, runsFeil: 'gh: Not Found (HTTP 404)' }, /kan ikke nå repoet/],
+    [{ repoOk: true, runsFeil: 'gh: Resource not accessible by integration (HTTP 403)' }, /kunne ikke telle/],
+    [{ repoOk: true, runsFeil: 'gh: Server Error (HTTP 500)' }, /kunne ikke telle/],
+    [{ repoOk: true, runsFeil: '' }, /kunne ikke telle/],
+    [{ repoOk: 'true', runsFeil: null }, /kan ikke nå repoet/],
+    [{}, /kan ikke nå repoet/],
+  ]) {
+    const r = tolkTelling(inn)
+    assert.equal(r.ok, false, JSON.stringify(inn))
+    assert.match(r.grunn, grunn)
+  }
+})
+
+test('dagstak-CLI --tolk leser repo-status og feiltekst', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tolk-'))
+  writeFileSync(join(dir, '404.err'), 'gh: Not Found (HTTP 404)\n')
+  writeFileSync(join(dir, '403.err'), 'gh: Forbidden (HTTP 403)\n')
+  const kjor = (...a) => JSON.parse(spawnSync('node', [join(SKRIPT, 'dagstak.mjs'), '--tolk', ...a], { encoding: 'utf8' }).stdout)
+  assert.equal(kjor('true', join(dir, '404.err')).ok, true)
+  assert.equal(kjor('true', join(dir, '403.err')).ok, false)
+  assert.equal(kjor('false', join(dir, '404.err')).ok, false)
+  assert.equal(kjor('true', '-').ok, true, '- betyr at oppslaget lyktes')
 })

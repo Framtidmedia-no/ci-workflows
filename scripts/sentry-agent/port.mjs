@@ -107,9 +107,11 @@ export function sjekkPatch({ numstat, patch, kilde }) {
 
 // CI-status for ÉN fast head-SHA (check-runs og commit-statuser fra API-et). Ingen sjekker er ikke grønt.
 const OK_KONKLUSJON = new Set(['success', 'skipped', 'neutral'])
+// Et feilet oppslag (null, feilobjekt eller annet enn en liste) er aldri «ingen sjekker» og aldri grønt.
 export function vurderCi(checkRuns, statuser) {
-  const runs = Array.isArray(checkRuns) ? checkRuns.filter(Boolean) : []
-  const st = Array.isArray(statuser) ? statuser.filter(Boolean) : []
+  if (!Array.isArray(checkRuns) || !Array.isArray(statuser)) return { ferdig: false, gronn: false, grunn: 'kunne ikke lese CI-status' }
+  const runs = checkRuns.filter(Boolean)
+  const st = statuser.filter(Boolean)
   if (runs.length + st.length === 0) return { ferdig: false, gronn: false }
   const ferdig = runs.every((r) => r.status === 'completed') && st.every((s) => s.state !== 'pending')
   if (!ferdig) return { ferdig: false, gronn: false }
