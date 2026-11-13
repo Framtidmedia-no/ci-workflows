@@ -538,8 +538,33 @@ test('vurderCi: grønn bare når alle check-runs og statuser på SHA-en er ferdi
 
 // ---------- ci_trygg / skalPublisere ----------
 
-test('sentry-repoer.json: ci_trygg er false for alle rader inntil repoets CI er gjennomgått', () => {
-  for (const [slug, rad] of Object.entries(KART)) assert.equal(rad.ci_trygg, false, slug)
+// Repoer der CI er gjennomgått og drift-sjekken (framtid-security/scripts/sentry-agent-drift.mjs) gir ci_trygg (13.11.2026).
+// Nye repoer legges til her først etter samme gjennomgang. Mobile-Drift (flyttes til Azure) og AaFK (eiers merge) står utenfor.
+const CI_GJENNOMGATT = new Set([
+  'Framtid-Tech-Helge/ask-app',
+  'Framtid-Tech-Kundeprosjekter/Espeland-Dashboard',
+  'Framtid-Tech-Kundeprosjekter/RingSizer',
+  'Framtid-Tech-Kundeprosjekter/Vegsundno',
+  'Framtid-Tech-Kundeprosjekter/vegsundbakken-eiendom',
+  'Framtidmedia-no/Framtid-CRM',
+  'Framtidmedia-no/Framtidmedia.no',
+  'Framtidmedia-no/Framtidtech',
+  'Framtidmedia-no/Somify',
+  'Framtidmedia-no/framtidmedia-no-mobile-dashboard',
+  'Framtidmedia-no/framtidtech-innhold',
+  'Framtidmedia-no/framtidtech-studio',
+  'Framtidmedia-no/publify',
+  'Framtidmedia-no/publify-mobile',
+  'Framtidmedia-no/somify-mobile',
+  'Framtidmedia-no/widget-plattform',
+])
+
+test('sentry-repoer.json: ci_trygg er true bare for agent-rader i repoer der CI er gjennomgått', () => {
+  for (const [slug, rad] of Object.entries(KART)) {
+    assert.equal(typeof rad.ci_trygg, 'boolean', slug)
+    if (rad.ci_trygg) assert.ok(rad.agent === true && CI_GJENNOMGATT.has(rad.repo), slug)
+  }
+  for (const repo of ['Framtidmedia-no/Mobile-Drift', 'Framtid-Tech-Helge/lesund-fotball-as']) assert.ok(!CI_GJENNOMGATT.has(repo), repo)
 })
 
 test('finnRepo gir ci_trygg bare når den er eksplisitt true', () => {
