@@ -8,13 +8,14 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { finnRepo } from '../scripts/sentry-agent/oppslag.mjs'
+import { finnRepo, skalPublisere, CI_UTRYGG } from '../scripts/sentry-agent/oppslag.mjs'
 import { rensHendelse } from '../scripts/sentry-agent/rens-hendelse.mjs'
 import { validerTriage } from '../scripts/sentry-agent/valider-triage.mjs'
 import { lesNumstat, vurderPort } from '../scripts/sentry-agent/port.mjs'
 import { harBlokkerendeFunn } from '../scripts/sentry-agent/review-funn.mjs'
 import { sjekkOpphav } from '../scripts/sentry-agent/opphav.mjs'
-import { sjekkPatch } from '../scripts/sentry-agent/port.mjs'
+import { sjekkPatch, vurderCi } from '../scripts/sentry-agent/port.mjs'
+import { agentRepoer, tellKjoringer, vurderDagstak } from '../scripts/sentry-agent/dagstak.mjs'
 
 const SKRIPT = new URL('../scripts/sentry-agent/', import.meta.url).pathname
 const KART = JSON.parse(readFileSync(new URL('../sentry-repoer.json', import.meta.url), 'utf8'))
@@ -35,8 +36,8 @@ test('finnRepo gir null for gangerolv-drift og ukjent slug', () => {
 })
 
 test('finnRepo gir repo, automerge og test for en agent-rad', () => {
-  assert.deepEqual(finnRepo('framtid-crm', kart), { repo: 'Framtidmedia-no/Framtid-CRM', automerge: true, test: 'pnpm vitest run', kilde: null })
-  assert.deepEqual(finnRepo('uten-test', kart), { repo: 'Framtid-Tech-Helge/x', automerge: false, test: null, kilde: null })
+  assert.deepEqual(finnRepo('framtid-crm', kart), { repo: 'Framtidmedia-no/Framtid-CRM', automerge: true, test: 'pnpm vitest run', kilde: null, ci_trygg: false })
+  assert.deepEqual(finnRepo('uten-test', kart), { repo: 'Framtid-Tech-Helge/x', automerge: false, test: null, kilde: null, ci_trygg: false })
   assert.deepEqual(finnRepo('a', { a: { repo: 'O/r', agent: true, automerge: false, test: null, kilde: ['web/src/'] } }).kilde, ['web/src/'])
 })
 
@@ -57,12 +58,13 @@ test('sentry-repoer.json: alle Gange-Rolv-slugs og alt i Gange-Rolv-AS står ute
 })
 
 test('sentry-repoer.json: hver rad har gyldig form, og automerge bare i Framtidmedia-no', () => {
-  const tillatt = new Set(['repo', 'agent', 'automerge', 'test', 'kilde', 'merknad'])
+  const tillatt = new Set(['repo', 'agent', 'automerge', 'test', 'kilde', 'ci_trygg', 'merknad'])
   for (const [slug, rad] of Object.entries(KART)) {
     assert.match(slug, /^[a-z0-9-]+$/)
     for (const k of Object.keys(rad)) assert.ok(tillatt.has(k), `${slug}: ukjent felt ${k}`)
     assert.equal(typeof rad.agent, 'boolean', `${slug}: agent`)
     assert.equal(typeof rad.automerge, 'boolean', `${slug}: automerge`)
+    assert.equal(typeof rad.ci_trygg, 'boolean', `${slug}: ci_trygg mangler`)
     assert.ok(rad.test === null || typeof rad.test === 'string', `${slug}: test`)
     if ('kilde' in rad) assert.ok(Array.isArray(rad.kilde) && rad.kilde.every((k) => typeof k === 'string' && k.endsWith('/')), `${slug}: kilde`)
     if (rad.repo !== null) assert.match(rad.repo, /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, `${slug}: repo`)
@@ -80,7 +82,7 @@ test('oppslag-CLI skriver JSON og null', () => {
   writeFileSync(join(dir, 'kart.json'), JSON.stringify(kart))
   const ok = spawnSync('node', [join(SKRIPT, 'oppslag.mjs'), 'framtid-crm', join(dir, 'kart.json')], { encoding: 'utf8' })
   assert.equal(ok.status, 0, ok.stderr)
-  assert.deepEqual(JSON.parse(ok.stdout), { repo: 'Framtidmedia-no/Framtid-CRM', automerge: true, test: 'pnpm vitest run', kilde: null })
+  assert.deepEqual(JSON.parse(ok.stdout), { repo: 'Framtidmedia-no/Framtid-CRM', automerge: true, test: 'pnpm vitest run', kilde: null, ci_trygg: false })
   const nei = spawnSync('node', [join(SKRIPT, 'oppslag.mjs'), 'gangerolv-drift', join(dir, 'kart.json')], { encoding: 'utf8' })
   assert.equal(nei.status, 0, nei.stderr)
   assert.equal(JSON.parse(nei.stdout), null)
@@ -468,4 +470,99 @@ test('sjekkPatch mot ekte git: diff --binary fra arbeidstreet, numstat fra git a
   const r = sjekkPatch({ numstat: git('apply', '--numstat', '-z', 'ond.patch'), patch: ond })
   assert.equal(r.ok, false)
   assert.ok(r.grunner.some((g) => /\.github/.test(g)) && r.grunner.some((g) => /symlink/.test(g)), JSON.stringify(r.grunner))
+})
+
+// ---------- dagstak (kjøringer, ikke PR-er) ----------
+
+test('agentRepoer gir unike repoer med agent:true, gruppert per eier', () => {
+  const k = {
+    a: { repo: 'Framtidmedia-no/A', agent: true, automerge: true, test: null },
+    b: { repo: 'Framtidmedia-no/A', agent: true, automerge: true, test: null },
+    c: { repo: 'Framtid-Tech-Helge/C', agent: true, automerge: false, test: null },
+    d: { repo: 'Gange-Rolv-AS/D', agent: false, automerge: false, test: null },
+    e: { repo: null, agent: false, automerge: false, test: null, merknad: 'x' },
+  }
+  assert.deepEqual(agentRepoer(k), { 'Framtidmedia-no': ['Framtidmedia-no/A'], 'Framtid-Tech-Helge': ['Framtid-Tech-Helge/C'] })
+  assert.ok(Object.values(agentRepoer(KART)).flat().every((r) => !r.startsWith('Gange-Rolv-AS/')))
+})
+
+test('tellKjoringer teller kjøringer startet i dag (UTC) og trekker fra den som kjører nå', () => {
+  const runs = [
+    { id: 1, created_at: '2026-11-13T00:00:01Z' },
+    { id: 2, created_at: '2026-11-13T23:59:59Z' },
+    { id: 3, created_at: '2026-11-12T23:59:59Z' },
+    { id: 99, created_at: '2026-11-13T10:00:00Z' },
+    { id: 4, created_at: 'tull' },
+    null,
+  ]
+  assert.equal(tellKjoringer(runs, { idag: '2026-11-13', egenId: 99 }), 2)
+  assert.equal(tellKjoringer(runs, { idag: '2026-11-13', egenId: 0 }), 3)
+  assert.equal(tellKjoringer([], { idag: '2026-11-13', egenId: 1 }), 0)
+  assert.equal(tellKjoringer('tull', { idag: '2026-11-13', egenId: 1 }), 0)
+})
+
+test('tellKjoringer teller samme kjøring bare én gang (duplikater fra paginering)', () => {
+  const runs = [{ id: 1, created_at: '2026-11-13T01:00:00Z' }, { id: 1, created_at: '2026-11-13T01:00:00Z' }]
+  assert.equal(tellKjoringer(runs, { idag: '2026-11-13', egenId: 0 }), 1)
+})
+
+test('vurderDagstak stopper når taket er nådd, og fail closed ved ugyldig tak', () => {
+  assert.deepEqual(vurderDagstak(9, 10), { stopp: false, antall: 9, tak: 10 })
+  assert.equal(vurderDagstak(10, 10).stopp, true)
+  assert.equal(vurderDagstak(11, 10).stopp, true)
+  assert.equal(vurderDagstak(0, 0).stopp, true)
+  assert.equal(vurderDagstak(0, 'tull').stopp, true)
+  assert.equal(vurderDagstak(NaN, 10).stopp, true)
+})
+
+test('dagstak-CLI leser kjøringer fra stdin', () => {
+  const runs = [{ id: 1, created_at: '2026-11-13T01:00:00Z' }, { id: 2, created_at: '2026-11-13T02:00:00Z' }]
+  const r = spawnSync('node', [join(SKRIPT, 'dagstak.mjs'), '2026-11-13', '2', '10'], { input: JSON.stringify(runs), encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout), { stopp: false, antall: 1, tak: 10 })
+})
+
+// ---------- vurderCi (én fast head-SHA) ----------
+
+const run = (navn, status, conclusion) => ({ name: navn, status, conclusion })
+test('vurderCi: grønn bare når alle check-runs og statuser på SHA-en er ferdige og vellykkede', () => {
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success'), run('lint', 'completed', 'skipped')], []), { ferdig: true, gronn: true })
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success'), run('lint', 'completed', 'neutral')], [{ state: 'success' }]), { ferdig: true, gronn: true })
+  assert.deepEqual(vurderCi([run('test', 'in_progress', null)], []), { ferdig: false, gronn: false })
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success')], [{ state: 'pending' }]), { ferdig: false, gronn: false })
+  assert.deepEqual(vurderCi([run('test', 'completed', 'failure')], []), { ferdig: true, gronn: false })
+  assert.deepEqual(vurderCi([run('test', 'completed', 'cancelled')], []), { ferdig: true, gronn: false })
+  assert.deepEqual(vurderCi([run('test', 'completed', 'success')], [{ state: 'error' }]), { ferdig: true, gronn: false })
+  assert.deepEqual(vurderCi([], []), { ferdig: false, gronn: false }, 'ingen sjekker er ikke grønt')
+  assert.deepEqual(vurderCi(null, null), { ferdig: false, gronn: false })
+})
+
+// ---------- ci_trygg / skalPublisere ----------
+
+test('sentry-repoer.json: ci_trygg er false for alle rader inntil repoets CI er gjennomgått', () => {
+  for (const [slug, rad] of Object.entries(KART)) assert.equal(rad.ci_trygg, false, slug)
+})
+
+test('finnRepo gir ci_trygg bare når den er eksplisitt true', () => {
+  const k = { a: { repo: 'O/r', agent: true, automerge: false, test: null, ci_trygg: true }, b: { repo: 'O/r', agent: true, automerge: false, test: null, ci_trygg: 'true' } }
+  assert.equal(finnRepo('a', k).ci_trygg, true)
+  assert.equal(finnRepo('b', k).ci_trygg, false)
+})
+
+test('skalPublisere pusher bare når ci_trygg === true', () => {
+  assert.deepEqual(skalPublisere({ ci_trygg: true }), { push: true, grunn: '' })
+  for (const rad of [{ ci_trygg: false }, { ci_trygg: 'true' }, { ci_trygg: 1 }, {}, null, undefined]) {
+    assert.deepEqual(skalPublisere(rad), { push: false, grunn: CI_UTRYGG }, JSON.stringify(rad))
+  }
+  assert.match(CI_UTRYGG, /repoets CI eksponerer hemmeligheter for agent-brancher/)
+})
+
+test('oppslag-CLI --publiser gir {push, grunn}', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'publiser-'))
+  writeFileSync(join(dir, 'kart.json'), JSON.stringify({ a: { repo: 'O/r', agent: true, automerge: false, test: null, ci_trygg: true } }))
+  const r = spawnSync('node', [join(SKRIPT, 'oppslag.mjs'), '--publiser', 'a', join(dir, 'kart.json')], { encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout), { push: true, grunn: '' })
+  const nei = spawnSync('node', [join(SKRIPT, 'oppslag.mjs'), '--publiser', 'finnes-ikke', join(dir, 'kart.json')], { encoding: 'utf8' })
+  assert.equal(JSON.parse(nei.stdout).push, false)
 })

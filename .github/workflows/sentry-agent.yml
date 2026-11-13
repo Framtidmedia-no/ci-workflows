@@ -15,24 +15,32 @@
 #                FRAMTID_AGENT_APP_ID, FRAMTID_AGENT_APP_KEY, LINEAR_API_KEY
 #
 # Jobber, hver med minst mulig:
-#   triage:    kill switch, dagstak, Sentry (lesetoken), opphavssjekk (sjekkOpphav: riktig prosjekt, riktig repo,
+#   triage:    kill switch, dagstak (kjøringer i dag), Sentry (lesetoken), opphavssjekk (sjekkOpphav: riktig prosjekt, riktig repo,
 #              ikke eldre enn 7 dager uten regresjon), rensing, Claude med bare Read/Grep/Glob, validering, Linear.
 #              Her finnes den UBETRODDE hendelsesteksten: DSN-en er offentlig, og n8n-webhooken har ingen signatur.
 #   fiks:      ser bare validert triage-JSON. Avhengighetene installeres FØR Claude. Claude kjører bak harden-runner
 #              (egress block). Jobben får aldri app-tokenet og leverer bare en patch (job output).
 #   bevis:     ren checkout av låst base-SHA, patchens stier sjekkes (sjekkPatch) før `git apply` uten hooks,
 #              testbevis i egne utpakkede faser (rød på base + testfiler, grønn på fiks). Ingen hemmeligheter.
-#   publiser:  ny ren checkout, samme sjekk og apply uten hooks, commit. App-tokenet (bare dette repoet) lages
-#              først her. Push uten hooks og PR med label sentry-agent.
-#   port:      venter på CI (maks 30 min), sjekker claude-review og vurderer porten (scripts/sentry-agent/port.mjs).
+#   publiser:  bare når repoet har ci_trygg: true. Ny ren checkout, samme sjekk og apply uten hooks, commit.
+#              App-tokenet (bare dette repoet) lages først her. Push uten hooks og PR med label sentry-agent.
+#              Uten ci_trygg pushes ingenting: Linear-saken får diagnosen og patchen (maks 200 kB) i en kommentar.
+#   port:      leser head-SHA én gang. CI (maks 30 min), claude-review, port-diffen og merge (--match-head-commit)
+#              gjelder nøyaktig den SHA-en. Porten: scripts/sentry-agent/port.mjs.
 #              Testbeviset er aldri nok alene: grønn CI og claude-review uten [KRITISK]/[HØY] kreves alltid.
 #              Merger til dev bare når alt holder. Aldri --auto, aldri mot main. Linear- og Sentry-kommentar.
+#
+# ci_trygg (per rad i sentry-repoer.json, standard false): ingen workflow i repoet som trigges av pull_request
+# eller push på sentry/** gir hemmeligheter til jobber som kjører repoets kode. Agentens test kjører i repoets CI
+# på agent-branchen, så uten dette kunne den lekke f.eks. SUPABASE_SERVICE_ROLE_KEY eller databasepassord.
+# claude-review er unntatt fordi den ikke kjører repoets kode. Settes til true først etter gjennomgang av repoets CI.
 #
 # Ubetrodd data (input fra dispatch, Sentry-tekst, modellsvar, patch) går aldri inn i ${{ }} i run:. Bare via env og filer.
 #
 # Akseptert restrisiko: prompt injection i hendelsesteksten kan få Claude i fiks-jobben til å kjøre kode via
-# testkommandoen mens SENTRY_AGENT_ANTHROPIC_KEY er i prosessen. harden-runner begrenser utgående trafikk til
-# Anthropic og det actionen selv må laste ned (GitHub og npm), og nøkkelen har eget kostnadstak i Anthropic Console.
+# testkommandoen mens SENTRY_AGENT_ANTHROPIC_KEY er i prosessen. bun, Claude Code og avhengighetene installeres før
+# harden-runner går i blokk-modus, så agent-steget bare når api.anthropic.com og api.github.com (github.token har
+# bare contents: read). Nøkkelen har eget kostnadstak i Anthropic Console.
 name: Sentry-agent
 
 on:
@@ -74,16 +82,10 @@ permissions:
 env:
   SENTRY_API: https://de.sentry.io/api/0
   SENTRY_ORG: framtid-tech-as
-  # Det claude-code-action selv må nå: setup-bun og Claude Code (GitHub, npm, Anthropics nedlastinger) og GitHub-API-et.
-  CLAUDE_ACTION_ENDPOINTS: >-
-    api.anthropic.com:443
-    api.github.com:443
-    github.com:443
-    objects.githubusercontent.com:443
-    release-assets.githubusercontent.com:443
-    registry.npmjs.org:443
-    downloads.claude.ai:443
-    storage.googleapis.com:443
+  # Samme versjoner som anthropics/claude-code-action@61a9c27 (v1.0.269) bruker. Installeres FØR egress-sperren,
+  # så agent-steget bare trenger Anthropic (og GitHub-API-et, se under).
+  CLAUDE_CODE_VERSION: '2.1.319'
+  CLAUDE_ACTION_DIR: _actions/anthropics/claude-code-action/61a9c274fa7110a66dfafc1bbbced03833eb25fe
 
 jobs:
   triage:
@@ -102,6 +104,7 @@ jobs:
       test: ${{ steps.oppslag.outputs.test }}
       automerge: ${{ steps.oppslag.outputs.automerge }}
       kilde: ${{ steps.oppslag.outputs.kilde }}
+      push: ${{ steps.oppslag.outputs.push }}
       base: ${{ steps.oppslag.outputs.base }}
       base_sha: ${{ steps.oppslag.outputs.base_sha }}
       har_dev: ${{ steps.oppslag.outputs.har_dev }}
@@ -182,13 +185,16 @@ jobs:
             echo "test=$(jq -r '.test // ""' <<<"$rad")"
             echo "automerge=$(jq -r '.automerge' <<<"$rad")"
             echo "kilde=$(jq -c '.kilde' <<<"$rad")"
+            echo "push=$(node "$SA/scripts/sentry-agent/oppslag.mjs" --publiser "$SLUG" "$SA/sentry-repoer.json" | jq -r .push)"
             echo "base=$base"
             echo "base_sha=$base_sha"
             echo "har_dev=$har_dev"
           } >> "$GITHUB_OUTPUT"
 
-      # Dagstak: agent-PR-er opprettet i dag på tvers av orgene. Appen er bare installert der agenten kan åpne
-      # PR-er, så en org uten installasjon har ingen agent-PR-er (teller 0).
+      # Dagstak: KJØRINGER av sentry-agent.yml startet i dag (UTC) i alle agent-repoene i sentry-repoer.json, ikke PR-er.
+      # Hver kjøring kan koste et modellkall, også uten PR. Sjekken skjer før Sentry og før modellen. Fail closed:
+      # mangler tokenet for en org med agent-repoer, eller feiler et oppslag (utenom 404 = ingen workflow ennå), stopper vi.
+      # Forutsetter at kalleren heter .github/workflows/sentry-agent.yml (framtid-security, Task 3).
       - name: App-token Framtidmedia-no (dagstak)
         id: tak_fm
         if: steps.oppslag.outputs.kjor == 'true'
@@ -198,7 +204,7 @@ jobs:
           app-id: ${{ secrets.FRAMTID_AGENT_APP_ID }}
           private-key: ${{ secrets.FRAMTID_AGENT_APP_KEY }}
           owner: Framtidmedia-no
-          permission-pull-requests: read
+          permission-actions: read
       - name: App-token Framtid-Tech-Helge (dagstak)
         id: tak_he
         if: steps.oppslag.outputs.kjor == 'true'
@@ -208,7 +214,7 @@ jobs:
           app-id: ${{ secrets.FRAMTID_AGENT_APP_ID }}
           private-key: ${{ secrets.FRAMTID_AGENT_APP_KEY }}
           owner: Framtid-Tech-Helge
-          permission-pull-requests: read
+          permission-actions: read
       - name: App-token Framtid-Tech-Kundeprosjekter (dagstak)
         id: tak_ku
         if: steps.oppslag.outputs.kjor == 'true'
@@ -218,7 +224,7 @@ jobs:
           app-id: ${{ secrets.FRAMTID_AGENT_APP_ID }}
           private-key: ${{ secrets.FRAMTID_AGENT_APP_KEY }}
           owner: Framtid-Tech-Kundeprosjekter
-          permission-pull-requests: read
+          permission-actions: read
       - name: App-token Framtid-Tech-Frank (dagstak)
         id: tak_fr
         if: steps.oppslag.outputs.kjor == 'true'
@@ -228,7 +234,7 @@ jobs:
           app-id: ${{ secrets.FRAMTID_AGENT_APP_ID }}
           private-key: ${{ secrets.FRAMTID_AGENT_APP_KEY }}
           owner: Framtid-Tech-Frank
-          permission-pull-requests: read
+          permission-actions: read
 
       - name: Sjekk dagstak
         id: tak
@@ -239,26 +245,29 @@ jobs:
           T_HE: ${{ steps.tak_he.outputs.token }}
           T_KU: ${{ steps.tak_ku.outputs.token }}
           T_FR: ${{ steps.tak_fr.outputs.token }}
+          EGEN_RUN: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          tak="${TAK:-10}"
-          [[ "$tak" =~ ^[0-9]{1,4}$ ]] || { echo "::error::SENTRY_AGENT_DAGSTAK er ikke et tall"; exit 1; }
+          stopp() { echo "::warning::$1"; echo "kjor=false" >> "$GITHUB_OUTPUT"; exit 0; }
           idag=$(date -u +%F)
-          sum=0
+          node "$SA/scripts/sentry-agent/dagstak.mjs" --repoer "$SA/sentry-repoer.json" > "$RUNNER_TEMP/agentrepoer.json"
+          : > "$RUNNER_TEMP/runs.jsonl"
           for par in "Framtidmedia-no:T_FM" "Framtid-Tech-Helge:T_HE" "Framtid-Tech-Kundeprosjekter:T_KU" "Framtid-Tech-Frank:T_FR"; do
             org="${par%%:*}"; var="${par#*:}"; token="${!var:-}"
-            [ -n "$token" ] || { echo "Ingen app-installasjon i $org (teller 0)"; continue; }
-            n=$(GH_TOKEN="$token" gh search prs --owner "$org" --label sentry-agent --created ">=$idag" --limit 200 --json url --jq length)
-            echo "$org: $n agent-PR-er i dag"
-            sum=$((sum + n))
+            mapfile -t repoer < <(jq -r --arg o "$org" '.[$o] // [] | .[]' "$RUNNER_TEMP/agentrepoer.json")
+            [ ${#repoer[@]} -gt 0 ] || continue
+            [ -n "$token" ] || stopp "Mangler app-token for $org (${#repoer[@]} agent-repoer). Kan ikke telle kjøringer, stopper."
+            for repo in "${repoer[@]}"; do
+              if ! GH_TOKEN="$token" gh api --paginate "repos/$repo/actions/workflows/sentry-agent.yml/runs?created=%3E%3D$idag&per_page=100" \
+                  --jq '.workflow_runs[] | {id, created_at}' >> "$RUNNER_TEMP/runs.jsonl" 2> "$RUNNER_TEMP/runs.err"; then
+                grep -q 'HTTP 404' "$RUNNER_TEMP/runs.err" || stopp "Kunne ikke telle kjøringer i $repo. Stopper."
+              fi
+            done
           done
-          echo "Totalt $sum av $tak"
-          if [ "$sum" -ge "$tak" ]; then
-            echo "::warning::Dagstaket er nådd ($sum/$tak). Hopper over."
-            echo "kjor=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "kjor=true" >> "$GITHUB_OUTPUT"
-          fi
+          vurdering=$(jq -s . "$RUNNER_TEMP/runs.jsonl" | node "$SA/scripts/sentry-agent/dagstak.mjs" "$idag" "$EGEN_RUN" "${TAK:-10}")
+          echo "Dagstak: $vurdering"
+          [ "$(jq -r .stopp <<<"$vurdering")" = "false" ] || stopp "Dagstaket er nådd eller ugyldig ($vurdering). Hopper over."
+          echo "kjor=true" >> "$GITHUB_OUTPUT"
 
       - name: Hent Sentry-sak, sjekk opphav og hent siste hendelse (lesetoken)
         id: sentry
@@ -337,15 +346,37 @@ jobs:
         if: steps.finn.outputs.kjor == 'true'
         run: cp "$RUNNER_TEMP/hendelse.json" .sentry-agent-hendelse.json
 
-      # Fra her: utgående trafikk bare til Anthropic, Sentry, Linear og det claude-code-action må laste ned.
+      # Før egress-sperren: bun, Claude Code og actionens egne avhengigheter. Actionen får stiene og laster ikke ned noe selv.
+      - name: Installer bun (før egress-sperren)
+        id: bun
+        if: steps.finn.outputs.kjor == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - name: Installer Claude Code og actionens avhengigheter (før egress-sperren)
+        id: claudecode
+        if: steps.finn.outputs.kjor == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CODE_VERSION"
+          test -x "$HOME/.local/bin/claude"
+          dir="$RUNNER_WORKSPACE/../$CLAUDE_ACTION_DIR"
+          [ -f "$dir/package.json" ] || { echo "::error::Fant ikke claude-code-action i $dir"; exit 1; }
+          (cd "$dir" && bun install --production)
+          echo "claude=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
+
+      # Blokk-modus fra her. api.anthropic.com: modellen. api.github.com: actionen lager en Octokit med github_token
+      # (contents: read) i agent-modus og leser repo-/hendelsesdata derfra. Ingen github.com, nedlastingsverter eller npm.
+      # api.linear.app: Linear-steget etter Claude.
       - name: Begrens utgående trafikk
         if: steps.finn.outputs.kjor == 'true'
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: block
           allowed-endpoints: >-
-            ${{ env.CLAUDE_ACTION_ENDPOINTS }}
-            de.sentry.io:443
+            api.anthropic.com:443
+            api.github.com:443
             api.linear.app:443
 
       - name: Claude-triage (Read, Grep, Glob)
@@ -353,9 +384,17 @@ jobs:
         if: steps.finn.outputs.kjor == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
+        env:
+          # Ingen telemetri, feilrapportering eller autooppdatering: bare api.anthropic.com er åpen.
+          DISABLE_TELEMETRY: '1'
+          DISABLE_ERROR_REPORTING: '1'
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         with:
           anthropic_api_key: ${{ secrets.SENTRY_AGENT_ANTHROPIC_KEY }}
           github_token: ${{ github.token }}
+          path_to_bun_executable: ${{ steps.bun.outputs.bun-path }}
+          path_to_claude_code_executable: ${{ steps.claudecode.outputs.claude }}
           claude_args: >-
             --max-turns 15
             --model ${{ inputs.model }}
@@ -423,7 +462,7 @@ jobs:
           if [ "$KLASSE" = "ugyldig" ] || [ "$KLASSE" = "uklar" ]; then vurdering="**Trenger vurdering:** triage ga $KLASSE svar."; else vurdering=""; fi
           diagnose=$(jq -r --arg v "$vurdering" '
             if .klasse then
-              "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.rotårsak)\n\n**Reproduksjon:** \(.reproduksjon)\n\n**Filer:** \(.filer | map("`" + . + "`") | join(", "))"
+              "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])\n\n**Reproduksjon:** \(.reproduksjon)\n\n**Filer:** \(.filer | map("`" + . + "`") | join(", "))"
             else "Ingen gyldig diagnose." end + (if $v != "" then "\n\n" + $v else "" end)' <<<"$TRIAGE")
 
           if [ "$NY" = "true" ]; then
@@ -519,11 +558,33 @@ jobs:
           else echo "::error::Fant ingen låsefil"; exit 1
           fi
 
+      # Før egress-sperren: bun, Claude Code og actionens egne avhengigheter. Actionen får stiene og laster ikke ned noe selv.
+      - name: Installer bun (før egress-sperren)
+        id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - name: Installer Claude Code og actionens avhengigheter (før egress-sperren)
+        id: claudecode
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CODE_VERSION"
+          test -x "$HOME/.local/bin/claude"
+          dir="$RUNNER_WORKSPACE/../$CLAUDE_ACTION_DIR"
+          [ -f "$dir/package.json" ] || { echo "::error::Fant ikke claude-code-action i $dir"; exit 1; }
+          (cd "$dir" && bun install --production)
+          echo "claude=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
+
+      # Blokk-modus fra her. api.anthropic.com: modellen. api.github.com: actionen lager en Octokit med github_token
+      # (contents: read) i agent-modus og leser repo-/hendelsesdata derfra. Ingen github.com, nedlastingsverter eller npm.
       - name: Begrens utgående trafikk
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: block
-          allowed-endpoints: ${{ env.CLAUDE_ACTION_ENDPOINTS }}
+          allowed-endpoints: >-
+            api.anthropic.com:443
+            api.github.com:443
 
       # Bare Anthropic-nøkkelen her. github.token har contents: read, og checkout er uten lagret token.
       # Jobben får aldri app-tokenet.
@@ -531,9 +592,17 @@ jobs:
         id: claude
         continue-on-error: true
         uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
+        env:
+          # Ingen telemetri, feilrapportering eller autooppdatering: bare api.anthropic.com er åpen.
+          DISABLE_TELEMETRY: '1'
+          DISABLE_ERROR_REPORTING: '1'
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         with:
           anthropic_api_key: ${{ secrets.SENTRY_AGENT_ANTHROPIC_KEY }}
           github_token: ${{ github.token }}
+          path_to_bun_executable: ${{ steps.bun.outputs.bun-path }}
+          path_to_claude_code_executable: ${{ steps.claudecode.outputs.claude }}
           claude_args: >-
             --max-turns 40
             --model ${{ inputs.model }}
@@ -681,7 +750,8 @@ jobs:
   publiser:
     name: Publiser (ren checkout, app-token først her)
     needs: [triage, fiks, bevis]
-    if: needs.bevis.outputs.testbevis == 'true'
+    # Bare når repoets CI ikke gir hemmeligheter til agentens kode (ci_trygg). Ellers pushes ingenting.
+    if: needs.bevis.outputs.testbevis == 'true' && needs.triage.outputs.push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -758,7 +828,7 @@ jobs:
           jq -r --arg l "$LINEAR_URL" --arg s "$SENTRY_URL" --arg base "$BASE" '
             "Automatisk fiks fra Sentry-agent (FRA-1976).\n\n" +
             "- Linear: \($l)\n- Sentry: \($s)\n\n" +
-            "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.rotårsak)\n\n" +
+            "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])\n\n" +
             "Testbevis: den nye testen feiler på `\($base)` og passerer på denne branchen.\n\n" +
             "Diagnosen er maskinlaget fra ubetrodd hendelsestekst. Porten i workflowen avgjør automerge."' <<<"$TRIAGE" > "$RUNNER_TEMP/pr-body.md"
           url=$(gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --label sentry-agent \
@@ -817,26 +887,40 @@ jobs:
           permission-checks: read
           permission-actions: read
 
-      - name: Vent på CI (maks 30 min)
-        id: ci
+      # Head-SHA leses ÉN gang. CI, claude-review, port-diffen og merge gjelder nøyaktig denne SHA-en.
+      - name: Les head-SHA
+        id: head
         if: needs.publiser.outputs.pr_nummer != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::Ugyldig PR-nummer"; exit 1; }
+          sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Ugyldig head-SHA"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Head-SHA: $sha"
+
+      - name: Vent på CI for head-SHA (maks 30 min)
+        id: ci
+        if: needs.publiser.outputs.pr_nummer != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ steps.head.outputs.sha }}
+        run: |
+          set -uo pipefail
           start=$(date +%s); gronn=false
           while :; do
             gaatt=$(( $(date +%s) - start ))
-            checks=$(gh pr checks "$PR" --repo "$REPO" --json name,bucket 2>/dev/null || echo '[]')
-            antall=$(jq 'length' <<<"$checks")
-            ventende=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")
-            if [ "$antall" -gt 0 ] && [ "$ventende" -eq 0 ]; then
-              if jq -e 'all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$checks" >/dev/null; then gronn=true; fi
-              jq -r '.[] | "  \(.bucket): \(.name)"' <<<"$checks"
+            runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" --jq '.check_runs[] | {name, status, conclusion}' 2>/dev/null | jq -s . || echo '[]')
+            statuser=$(gh api "repos/$REPO/commits/$SHA/status" --jq '.statuses | map({state, context})' 2>/dev/null || echo '[]')
+            ci=$(jq -n --argjson r "$runs" --argjson s "$statuser" '{checkRuns: $r, statuser: $s}' | node "$SA/scripts/sentry-agent/port.mjs" --ci)
+            if [ "$(jq -r .ferdig <<<"$ci")" = "true" ]; then
+              gronn=$(jq -r .gronn <<<"$ci")
+              jq -r '.[] | "  \(.conclusion): \(.name)"' <<<"$runs"
               break
             fi
-            if [ "$antall" -eq 0 ] && [ "$gaatt" -ge 300 ]; then echo "::warning::Ingen sjekker etter 5 min."; break; fi
+            if [ "$(jq 'length' <<<"$runs")" -eq 0 ] && [ "$gaatt" -ge 300 ]; then echo "::warning::Ingen sjekker etter 5 min."; break; fi
             if [ "$gaatt" -ge 1800 ]; then echo "::warning::CI ble ikke ferdig innen 30 min."; break; fi
             sleep 30
           done
@@ -847,9 +931,9 @@ jobs:
         if: needs.publiser.outputs.pr_nummer != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          sha: ${{ steps.head.outputs.sha }}
         run: |
           set -euo pipefail
-          sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
           kjoringer=$(gh api "repos/$REPO/commits/$sha/check-runs" --paginate --jq '[.check_runs[] | select(.name | test("Claude-review"))]' | jq -s 'add // []')
           if ! jq -e 'length > 0 and all(.[]; .status == "completed" and .conclusion == "success")' <<<"$kjoringer" >/dev/null; then
             echo "::warning::Claude-review mangler eller feilet på $sha."
@@ -862,7 +946,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: needs.publiser.outputs.pr_nummer != ''
         with:
-          ref: ${{ needs.triage.outputs.branch }}
+          ref: ${{ steps.head.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -876,9 +960,10 @@ jobs:
           AUTOMERGE: ${{ needs.triage.outputs.automerge }}
           HAR_DEV: ${{ needs.triage.outputs.har_dev }}
           KILDE: ${{ needs.triage.outputs.kilde }}
+          SHA: ${{ steps.head.outputs.sha }}
         run: |
           set -euo pipefail
-          git -c core.hooksPath=/dev/null diff --numstat -z --no-renames "origin/$BASE...HEAD" | node "$SA/scripts/sentry-agent/port.mjs" --numstat > "$RUNNER_TEMP/filer.json"
+          git -c core.hooksPath=/dev/null diff --numstat -z --no-renames "origin/$BASE...$SHA" | node "$SA/scripts/sentry-agent/port.mjs" --numstat > "$RUNNER_TEMP/filer.json"
           jq -n --slurpfile f "$RUNNER_TEMP/filer.json" \
             --arg t "$TESTBEVIS" --arg c "$CI_GRONN" --arg r "$REVIEW_OK" --arg a "$AUTOMERGE" --arg d "$HAR_DEV" --arg k "${KILDE:-null}" \
             '{filer: $f[0], testbevis: ($t == "true"), ciGronn: ($c == "true"), reviewOk: ($r == "true"), automerge: ($a == "true"), harDev: ($d == "true"), kilde: (try ($k | fromjson) catch null)}' \
@@ -891,10 +976,12 @@ jobs:
         if: steps.port.outputs.merge == 'true' && needs.triage.outputs.har_dev == 'true' && needs.triage.outputs.base == 'dev'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ steps.head.outputs.sha }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR" --repo "$REPO" --squash
-          echo "Merget $PR_URL til dev"
+          # Feiler hvis noen har pushet etter at porten ble vurdert.
+          gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"
+          echo "Merget $PR_URL ($SHA) til dev"
 
       - name: Kommenter i Linear
         if: always()
@@ -904,10 +991,22 @@ jobs:
           GRUNNER: ${{ needs.triage.outputs.grunn }}${{ needs.fiks.outputs.grunn }}${{ needs.bevis.outputs.grunn }}${{ needs.publiser.outputs.grunn }}
           MERGET: ${{ steps.merge.outcome == 'success' }}
           HAR_PORT: ${{ steps.port.outcome == 'success' }}
+          TESTBEVIS: ${{ needs.bevis.outputs.testbevis }}
+          PUSH: ${{ needs.triage.outputs.push }}
+          PATCH_B64: ${{ needs.fiks.outputs.patch }}
+          TRIAGE: ${{ needs.triage.outputs.triage }}
         run: |
           set -euo pipefail
           [ -n "$LINEAR_UUID" ] || exit 0
-          if [ -n "$PR_URL" ]; then
+          if [ -z "$PR_URL" ] && [ "$TESTBEVIS" = "true" ] && [ "$PUSH" != "true" ]; then
+            # ci_trygg mangler: ingen push. Diagnosen og den testede patchen (maks 200 kB) går til Linear.
+            printf '%s' "$PATCH_B64" | base64 -d | head -c 200000 > "$RUNNER_TEMP/fiks.patch"
+            lengste=$(grep -o '`*' "$RUNNER_TEMP/fiks.patch" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+            gjerde=$(printf '%*s' "$(( lengste < 3 ? 3 : lengste + 1 ))" '' | tr ' ' '`')
+            diagnose=$(jq -r '"**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])"' <<<"$TRIAGE")
+            tekst=$(printf 'Repoets CI eksponerer hemmeligheter for agent-brancher (ci_trygg er ikke satt), så agenten pushet ingenting.\nTestbeviset er bestått: den nye testen er rød på base og grønn med patchen.\n\n%s\n\n%sdiff\n%s\n%s' \
+              "$diagnose" "$gjerde" "$(cat "$RUNNER_TEMP/fiks.patch")" "$gjerde")
+          elif [ -n "$PR_URL" ]; then
             if [ "$MERGET" = "true" ]; then
               tekst="Fiksen er merget til dev: $PR_URL. Promotering til main skjer i økt (/ship)."
             elif [ "$HAR_PORT" = "true" ]; then
