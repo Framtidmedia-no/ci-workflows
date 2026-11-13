@@ -20,26 +20,32 @@ const sak = (over = {}) => ({ id: '123', status: 'unresolved', project: { slug: 
 
 // ---------- linearIder ----------
 
-test('linearIder finner saks-ID i fix-branch, agent-branch og tittel, store bokstaver og uten duplikater', () => {
-  assert.deepEqual(linearIder(['fix/FRA-123-kort-navn', 'fix: noe (FRA-123)'], TEAM), ['FRA-123'])
-  assert.deepEqual(linearIder(['sentry/fra-45-framtid-crm-1a'], TEAM), ['FRA-45'])
-  assert.deepEqual(linearIder(['feat/hel-7-og-gr-8'], TEAM), ['HEL-7', 'GR-8'])
+test('linearIder finner saks-ID først i et branch-segment, store bokstaver og uten duplikater', () => {
+  assert.deepEqual(linearIder('fix/FRA-123-kort-navn', TEAM), ['FRA-123'])
+  assert.deepEqual(linearIder('sentry/fra-45-framtid-crm-1a', TEAM), ['FRA-45'])
+  assert.deepEqual(linearIder('FRA-7', TEAM), ['FRA-7'])
+  assert.deepEqual(linearIder('hel-7/gr-8-x', TEAM), ['HEL-7', 'GR-8'])
+  assert.deepEqual(linearIder('fix/FRA-9-a/FRA-9-b', TEAM), ['FRA-9'])
 })
 
-test('linearIder ignorerer ord som ligner men ikke er et kjent team (renovate, node-20)', () => {
-  assert.deepEqual(linearIder(['renovate/node-20.x', 'chore(deps): update node to v20'], TEAM), [])
-  assert.deepEqual(linearIder(['xfra-12', 'fra-12x'], TEAM), [])
+test('linearIder ignorerer ID-er som ikke står først i segmentet, datoer og versjoner', () => {
+  assert.deepEqual(linearIder('renovate/node-20.x', TEAM), [])
+  assert.deepEqual(linearIder('feat/hel-7-og-gr-8', TEAM), ['HEL-7'], 'bare starten av segmentet teller')
+  assert.deepEqual(linearIder('fix/gr-2026-11-13-cache', TEAM), [], 'dato ser ut som en ID')
+  assert.deepEqual(linearIder('fix/cache-FRA-12', TEAM), [])
+  assert.deepEqual(linearIder('xfra-12/fra-12x', TEAM), [])
 })
 
-test('linearIder tåler manglende tekster og teamliste', () => {
-  assert.deepEqual(linearIder([undefined, null, ''], TEAM), [])
-  assert.deepEqual(linearIder(['fix/FRA-1'], []), [])
-  assert.deepEqual(linearIder(['fix/FRA-1'], undefined), [])
+test('linearIder tåler manglende branch og teamliste', () => {
+  assert.deepEqual(linearIder(undefined, TEAM), [])
+  assert.deepEqual(linearIder('', TEAM), [])
+  assert.deepEqual(linearIder('fix/FRA-1', []), [])
+  assert.deepEqual(linearIder('fix/FRA-1', undefined), [])
 })
 
 test('linearIder tar maks MAKS_SAKER', () => {
-  const mange = Array.from({ length: MAKS_SAKER + 5 }, (_, i) => `FRA-${i + 1}`).join(' ')
-  assert.equal(linearIder([mange], TEAM).length, MAKS_SAKER)
+  const mange = Array.from({ length: MAKS_SAKER + 5 }, (_, i) => `FRA-${i + 1}`).join('/')
+  assert.equal(linearIder(mange, TEAM).length, MAKS_SAKER)
 })
 
 // ---------- sentryIder ----------
@@ -51,9 +57,18 @@ test('sentryIder leser numerisk ID fra permalink og organisasjons-URL i riktig o
       `https://${ORG}.sentry.io/issues/111/?project=4`,
       `https://de.sentry.io/organizations/${ORG}/issues/222/`,
       `https://sentry.io/organizations/${ORG}/issues/333`,
+      `https://${ORG}.sentry.io/issues/444/events/abc123/`,
     ], ORG),
-    ['111', '222', '333'],
+    ['111', '222', '333', '444'],
   )
+})
+
+test('sentryIder godtar kort-ID (som saker skrevet for hånd bruker), normalisert til store bokstaver', () => {
+  assert.deepEqual(
+    sentryIder([`https://${ORG}.sentry.io/issues/MOBILE-DRIFT-3/`, `https://${ORG}.sentry.io/issues/framtid-crm-1a`, `https://${ORG}.sentry.io/issues/MOBILE-DRIFT-3`], ORG),
+    ['MOBILE-DRIFT-3', 'FRAMTID-CRM-1A'],
+  )
+  assert.deepEqual(sentryIder([`https://${ORG}.sentry.io/issues/-X/`, `https://${ORG}.sentry.io/issues/A_B-1/`, `https://${ORG}.sentry.io/issues/ABC/`], ORG), [])
 })
 
 test('sentryIder avviser annen org, andre domener og ikke-numeriske ID-er', () => {
@@ -62,7 +77,6 @@ test('sentryIder avviser annen org, andre domener og ikke-numeriske ID-er', () =
       'https://annen-org.sentry.io/issues/1/',
       `https://${ORG}.sentry.io.ond.no/issues/2/`,
       `https://ond.no/${ORG}.sentry.io/issues/3/`,
-      `https://${ORG}.sentry.io/issues/FRAMTID-CRM-1A/`,
       'https://github.com/Framtidmedia-no/Framtid-CRM/pull/4',
       null,
       42,
@@ -71,9 +85,9 @@ test('sentryIder avviser annen org, andre domener og ikke-numeriske ID-er', () =
   )
 })
 
-test('sentryIderITekst finner Sentry-lenker i markdown-beskrivelse', () => {
-  const tekst = `Feil i prod. Se [PUBLIFY-37](https://${ORG}.sentry.io/issues/777/?project=9) og <https://de.sentry.io/organizations/${ORG}/issues/888/>.\nIkke: https://annen.sentry.io/issues/999/`
-  assert.deepEqual(sentryIderITekst(tekst, ORG), ['777', '888'])
+test('sentryIderITekst finner Sentry-lenker i markdown-beskrivelse, også flere saker', () => {
+  const tekst = `Se [PUBLIFY-37](https://${ORG}.sentry.io/issues/777/?project=9) og <https://de.sentry.io/organizations/${ORG}/issues/888/>.\nOgså https://${ORG}.sentry.io/issues/MOBILE-DRIFT-4\nIkke: https://annen.sentry.io/issues/999/`
+  assert.deepEqual(sentryIderITekst(tekst, ORG), ['777', '888', 'MOBILE-DRIFT-4'])
   assert.deepEqual(sentryIderITekst(null, ORG), [])
 })
 
@@ -100,29 +114,24 @@ test('vurderLukk hopper over saker som allerede er løst eller ignorert', () => 
 
 // ---------- CLI ----------
 
-test('CLI --linear leser tekster og team fra JSON-filer', () => {
+test('CLI --linear leser branch og team-fil', () => {
   const dir = mkdtempSync(join(tmpdir(), 'lukk-'))
-  writeFileSync(join(dir, 'tekster.json'), JSON.stringify(['fix/FRA-9-x', 'renovate/node-20']))
   writeFileSync(join(dir, 'team.json'), JSON.stringify(TEAM))
-  const r = spawnSync('node', [SKRIPT, '--linear', join(dir, 'tekster.json'), join(dir, 'team.json')], { encoding: 'utf8' })
+  const r = spawnSync('node', [SKRIPT, '--linear', 'fix/FRA-9-x', join(dir, 'team.json')], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(JSON.parse(r.stdout), ['FRA-9'])
 })
 
-test('CLI --sentry leser URL-er og org', () => {
+test('CLI --linear-saker samler vedlegg og beskrivelse per Linear-sak', () => {
   const dir = mkdtempSync(join(tmpdir(), 'lukk-'))
-  writeFileSync(join(dir, 'urler.json'), JSON.stringify([`https://${ORG}.sentry.io/issues/5/`, 'https://annen.sentry.io/issues/6/']))
-  const r = spawnSync('node', [SKRIPT, '--sentry', join(dir, 'urler.json'), ORG], { encoding: 'utf8' })
+  writeFileSync(join(dir, 'saker.json'), JSON.stringify([
+    { vedlegg: [`https://${ORG}.sentry.io/issues/41/`, 'https://github.com/x/y/pull/1'], beskrivelse: `https://${ORG}.sentry.io/issues/41/` },
+    { vedlegg: [], beskrivelse: `se https://${ORG}.sentry.io/issues/42/` },
+    { vedlegg: [], beskrivelse: `https://${ORG}.sentry.io/issues/43/ og https://${ORG}.sentry.io/issues/MOBILE-DRIFT-3` },
+  ]))
+  const r = spawnSync('node', [SKRIPT, '--linear-saker', join(dir, 'saker.json'), ORG], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
-  assert.deepEqual(JSON.parse(r.stdout), ['5'])
-})
-
-test('CLI --sentry-tekst leser beskrivelser fra JSON-liste', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lukk-'))
-  writeFileSync(join(dir, 'tekster.json'), JSON.stringify([`se https://${ORG}.sentry.io/issues/41/`, null, 'ingenting']))
-  const r = spawnSync('node', [SKRIPT, '--sentry-tekst', join(dir, 'tekster.json'), ORG], { encoding: 'utf8' })
-  assert.equal(r.status, 0, r.stderr)
-  assert.deepEqual(JSON.parse(r.stdout), ['41'])
+  assert.deepEqual(JSON.parse(r.stdout), ['41', '42', '43', 'MOBILE-DRIFT-3'])
 })
 
 test('CLI --vurder leser sak og kart fra filer og skriver {lukk, grunn}', () => {

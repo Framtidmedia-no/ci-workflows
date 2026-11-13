@@ -1,7 +1,7 @@
 # Sentry-lukk: markerer Sentry-saken «løst i neste release» når fiksen merges (FRA-1976).
-# Gjelder både agentens egne PR-er og fikser merget for hånd, så lenge branch eller tittel har Linear-ID-en.
+# Gjelder både agentens egne PR-er og fikser merget for hånd, så lenge branchnavnet har Linear-ID-en (fix/FRA-123-…).
 #
-# Kobling: merget PR → Linear-ID (branch, tittel) → Sentry-vedlegg eller lenke i beskrivelsen på Linear-saken → Sentry-sak.
+# Kobling: merget PR → Linear-ID først i et branch-segment → Sentry-lenker i vedlegg og beskrivelse på Linear-saken → Sentry-sak.
 # Bare uløste saker fra et prosjekt som peker på nettopp dette repoet i sentry-repoer.json røres (scripts/sentry-agent/lukk.mjs).
 # «Løst i neste release»: hendelser fra releaser som allerede kjører (prod før promotering) gjenåpner ikke saken,
 # men den blir en regresjon hvis feilen kommer igjen i en nyere release.
@@ -16,7 +16,7 @@
 #       with: { ci-ref: <samme SHA> }
 #       secrets: SENTRY_READ_TOKEN, SENTRY_WRITE_TOKEN, LINEAR_API_KEY (eksplisitt, aldri inherit)
 #
-# Kjører aldri repoets kode: bare scripts fra ci-workflows på ci-ref. PR-data (branch, tittel) er ubetrodd og går bare via env.
+# Kjører aldri repoets kode: bare scripts fra ci-workflows på ci-ref. Branchnavnet er ubetrodd og går bare via env.
 name: Sentry-lukk
 
 on:
@@ -57,7 +57,6 @@ jobs:
       MERGET: ${{ github.event.pull_request.merged }}
       HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      PR_TITTEL: ${{ github.event.pull_request.title }}
     steps:
       - name: Sjekk hendelse og hemmeligheter
         id: start
@@ -98,25 +97,28 @@ jobs:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
         run: |
           set -euo pipefail
+          # Linear nede eller ugyldig nøkkel skal ikke gi rødt kryss på hver merge: advarsel og stopp.
+          stopp() { echo "::warning::$1"; echo "kjor=false" >> "$GITHUB_OUTPUT"; exit 0; }
           gql() { curl -sS --fail-with-body --max-time 30 https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d "$1"; }
-          gql '{"query":"{teams(first:100){nodes{key}}}"}' | jq -c '[.data.teams.nodes[].key]' > "$RUNNER_TEMP/team.json"
-          jq -n --arg b "$HEAD_REF" --arg t "$PR_TITTEL" '[$b, $t]' > "$RUNNER_TEMP/tekster.json"
-          node "$SA/scripts/sentry-agent/lukk.mjs" --linear "$RUNNER_TEMP/tekster.json" "$RUNNER_TEMP/team.json" > "$RUNNER_TEMP/linear.json"
+          svar=$(gql '{"query":"{teams(first:100){nodes{key}}}"}') || stopp "Linear svarte ikke. Sentry-saker er ikke lukket."
+          jq -ce '[.data.teams.nodes[]?.key] | select(length > 0)' <<<"$svar" > "$RUNNER_TEMP/team.json" || stopp "Fikk ingen Linear-team. Sentry-saker er ikke lukket."
+          node "$SA/scripts/sentry-agent/lukk.mjs" --linear "$HEAD_REF" "$RUNNER_TEMP/team.json" > "$RUNNER_TEMP/linear.json"
           if [ "$(jq length "$RUNNER_TEMP/linear.json")" = "0" ]; then
-            echo "::notice::Ingen Linear-ID i branch eller tittel. Ingenting å lukke."
+            echo "::notice::Ingen Linear-ID først i et segment av branchnavnet. Ingenting å lukke."
             echo "kjor=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # Sentry-lenker fra vedlegg (agentens saker) og fra beskrivelsen (saker laget for hånd).
-          : > "$RUNNER_TEMP/tekst.jsonl"
+          # Sentry-lenker fra vedlegg (agentens saker) og beskrivelsen (saker laget for hånd, ofte med kort-ID).
+          : > "$RUNNER_TEMP/saker.jsonl"
           for id in $(jq -r '.[]' "$RUNNER_TEMP/linear.json"); do
             svar=$(gql "$(jq -n --arg i "$id" '{query:"query($i:String!){issue(id:$i){description attachments(first:50){nodes{url}}}}",variables:{i:$i}}')") || { echo "::warning::Fant ikke $id i Linear."; continue; }
-            jq -c '[.data.issue.attachments.nodes[]?.url, .data.issue.description] | map(select(type == "string"))' <<<"$svar" >> "$RUNNER_TEMP/tekst.jsonl"
+            jq -c '{vedlegg: [.data.issue.attachments.nodes[]?.url], beskrivelse: (.data.issue.description // "")}' <<<"$svar" >> "$RUNNER_TEMP/saker.jsonl" \
+              || echo "::warning::Uventet svar fra Linear for $id."
           done
-          jq -s 'add // []' "$RUNNER_TEMP/tekst.jsonl" > "$RUNNER_TEMP/tekst.json"
-          node "$SA/scripts/sentry-agent/lukk.mjs" --sentry-tekst "$RUNNER_TEMP/tekst.json" "$SENTRY_ORG" > "$RUNNER_TEMP/sentry.json"
+          jq -s '.' "$RUNNER_TEMP/saker.jsonl" > "$RUNNER_TEMP/saker.json"
+          node "$SA/scripts/sentry-agent/lukk.mjs" --linear-saker "$RUNNER_TEMP/saker.json" "$SENTRY_ORG" > "$RUNNER_TEMP/sentry.json"
           echo "Linear: $(jq -c . "$RUNNER_TEMP/linear.json") · Sentry: $(jq -c . "$RUNNER_TEMP/sentry.json")"
           if [ "$(jq length "$RUNNER_TEMP/sentry.json")" = "0" ]; then
-            echo "::notice::Linear-sakene har ingen Sentry-vedlegg. Ingenting å lukke."
+            echo "::notice::Linear-sakene har ingen Sentry-lenke. Ingenting å lukke."
             echo "kjor=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "kjor=true" >> "$GITHUB_OUTPUT"
@@ -136,11 +138,14 @@ jobs:
             echo "| Sentry-sak | Resultat |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          for sid in $(jq -r '.[]' "$RUNNER_TEMP/sentry.json"); do
-            [[ "$sid" =~ ^[0-9]{1,20}$ ]] || continue
-            if ! api "$SENTRY_READ_TOKEN" "$SENTRY_API/organizations/$SENTRY_ORG/issues/$sid/" > "$RUNNER_TEMP/sak.json"; then
-              echo "| $sid | fant ikke saken |" >> "$GITHUB_STEP_SUMMARY"; continue
+          # ref er numerisk ID eller kort-ID (MOBILE-DRIFT-3). Sentry godtar begge. Lukking skjer med den numeriske ID-en fra svaret.
+          for ref in $(jq -r '.[]' "$RUNNER_TEMP/sentry.json"); do
+            [[ "$ref" =~ ^([0-9]{1,20}|[A-Z0-9][A-Z0-9-]{0,98}-[A-Z0-9]{1,10})$ ]] || continue
+            if ! api "$SENTRY_READ_TOKEN" "$SENTRY_API/organizations/$SENTRY_ORG/issues/$ref/" > "$RUNNER_TEMP/sak.json"; then
+              echo "| $ref | fant ikke saken |" >> "$GITHUB_STEP_SUMMARY"; continue
             fi
+            sid=$(jq -r '.id // ""' "$RUNNER_TEMP/sak.json")
+            [[ "$sid" =~ ^[0-9]{1,20}$ ]] || { echo "| $ref | ugyldig svar fra Sentry |" >> "$GITHUB_STEP_SUMMARY"; continue; }
             kort=$(jq -r '.shortId // ""' "$RUNNER_TEMP/sak.json")
             vurdering=$(node "$SA/scripts/sentry-agent/lukk.mjs" --vurder "$RUNNER_TEMP/sak.json" "$REPO" "$SA/sentry-repoer.json")
             if [ "$(jq -r .lukk <<<"$vurdering")" != "true" ]; then
