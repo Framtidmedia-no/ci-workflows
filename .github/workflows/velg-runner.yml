@@ -64,6 +64,7 @@ jobs:
           STATUS: ${{ vars.CI_RUNNER_STATUS }}
           # Repo-variabel CI_ALDRI_OVERLOP=true: aldri send kjøringen til GitHub fordi egne runnere er opptatt. Jobbene står i kø i stedet.
           ALDRI_OVERLOP: ${{ vars.CI_ALDRI_OVERLOP }}
+          GREN: ${{ github.head_ref || github.ref_name }}
         run: |
           valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
@@ -77,7 +78,11 @@ jobs:
           sentralt_fullt() {
             [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 180 ]
           }
-          if [ "$ALDRI_OVERLOP" = "true" ] && [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
+          if [[ "$GREN" == sentry/* ]]; then
+            # Agent-brancher (FRA-1976) kjører kode fra Sentry-agenten. Den skal aldri på faste egne runnere,
+            # der den kunne lagt igjen noe for neste jobb: alltid GitHub sine engangsrunnere.
+            grunn="sentry/*-branch: kode fra Sentry-agenten kjøres bare på GitHub sine engangsrunnere"
+          elif [ "$ALDRI_OVERLOP" = "true" ] && [ -n "$BASE" ] && echo "$BASE" | grep -q 'self-hosted'; then
             # Kø er gratis, GitHub-minutter er ikke det: la jobbene vente på egne runnere uansett hvor travelt det er.
             valg="$BASE"
             grunn="CI_ALDRI_OVERLOP=true: venter i kø på egne runnere, sender aldri til GitHub fordi de er opptatt"
