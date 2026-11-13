@@ -405,7 +405,7 @@ jobs:
             --model ${{ inputs.model }}
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["klasse","sikkerhet","filer","rotårsak","reproduksjon"],"properties":{"klasse":{"type":"string","enum":["bug","støy","infrastruktur","uklar"]},"sikkerhet":{"type":"number","minimum":0,"maximum":1},"filer":{"type":"array","maxItems":10,"items":{"type":"string"}},"rotårsak":{"type":"string","maxLength":500},"reproduksjon":{"type":"string","maxLength":500}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["klasse","sikkerhet","filer","rotarsak","reproduksjon"],"properties":{"klasse":{"type":"string","enum":["bug","støy","infrastruktur","uklar"]},"sikkerhet":{"type":"number","minimum":0,"maximum":1},"filer":{"type":"array","maxItems":10,"items":{"type":"string"}},"rotarsak":{"type":"string","maxLength":500},"reproduksjon":{"type":"string","maxLength":500}}}'
           prompt: |
             REPO: ${{ github.repository }}
 
@@ -425,7 +425,7 @@ jobs:
 
             Svar BARE med JSON etter skjemaet:
             klasse, sikkerhet (0–1), filer (relative stier i repoet som må endres, maks 10, må finnes),
-            rotårsak (maks 500 tegn), reproduksjon (maks 500 tegn: hvordan en test kan fremkalle feilen).
+            rotarsak (maks 500 tegn), reproduksjon (maks 500 tegn: hvordan en test kan fremkalle feilen).
 
       - name: Valider triage
         id: valider
@@ -467,7 +467,7 @@ jobs:
           if [ "$KLASSE" = "ugyldig" ] || [ "$KLASSE" = "uklar" ]; then vurdering="**Trenger vurdering:** triage ga $KLASSE svar."; else vurdering=""; fi
           diagnose=$(jq -r --arg v "$vurdering" '
             if .klasse then
-              "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])\n\n**Reproduksjon:** \(.reproduksjon)\n\n**Filer:** \(.filer | map("`" + . + "`") | join(", "))"
+              "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotarsak"])\n\n**Reproduksjon:** \(.reproduksjon)\n\n**Filer:** \(.filer | map("`" + . + "`") | join(", "))"
             else "Ingen gyldig diagnose." end + (if $v != "" then "\n\n" + $v else "" end)' <<<"$TRIAGE")
 
           if [ "$NY" = "true" ]; then
@@ -833,7 +833,7 @@ jobs:
           jq -r --arg l "$LINEAR_URL" --arg s "$SENTRY_URL" --arg base "$BASE" '
             "Automatisk fiks fra Sentry-agent (FRA-1976).\n\n" +
             "- Linear: \($l)\n- Sentry: \($s)\n\n" +
-            "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])\n\n" +
+            "**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotarsak"])\n\n" +
             "Testbevis: den nye testen feiler på `\($base)` og passerer på denne branchen.\n\n" +
             "Diagnosen er maskinlaget fra ubetrodd hendelsestekst. Porten i workflowen avgjør automerge."' <<<"$TRIAGE" > "$RUNNER_TEMP/pr-body.md"
           url=$(gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --label sentry-agent \
@@ -1036,7 +1036,7 @@ jobs:
             printf '%s' "$PATCH_B64" | base64 -d | head -c 200000 > "$RUNNER_TEMP/fiks.patch"
             lengste=$(grep -o '`*' "$RUNNER_TEMP/fiks.patch" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
             gjerde=$(printf '%*s' "$(( lengste < 3 ? 3 : lengste + 1 ))" '' | tr ' ' '`')
-            diagnose=$(jq -r '"**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotårsak"])"' <<<"$TRIAGE")
+            diagnose=$(jq -r '"**Klasse:** \(.klasse) (sikkerhet \(.sikkerhet))\n\n**Rotårsak:** \(.["rotarsak"])"' <<<"$TRIAGE")
             tekst=$(printf 'Repoets CI eksponerer hemmeligheter for agent-brancher (ci_trygg er ikke satt), så agenten pushet ingenting.\nTestbeviset er bestått: den nye testen er rød på base og grønn med patchen.\n\n%s\n\n%sdiff\n%s\n%s' \
               "$diagnose" "$gjerde" "$(cat "$RUNNER_TEMP/fiks.patch")" "$gjerde")
           elif [ -n "$PR_URL" ]; then
