@@ -1,0 +1,3 @@
+const CDN = ["https://cdn.jsdelivr.net"]
+const scriptSrc = kilder("'self'", CDN.join(" "))
+export const csp = [`script-src ${scriptSrc}`, "report-uri /r"].join("; ")

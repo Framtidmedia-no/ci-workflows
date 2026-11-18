@@ -16,6 +16,23 @@ jobs:
         with:
           node-version: '24'
       - run: node --test tests/ssrf-drift.test.mjs
+  csp-sjekk:
+    name: csp-sjekk gir riktige advarsler og aldri exit ≠ 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+      - run: node --test tests/csp-sjekk.test.mjs
+  csp-sjekk-workflow:
+    name: csp-sjekk.yml kjører ende til ende (mot dette repoet)
+    uses: ./.github/workflows/csp-sjekk.yml
+    with:
+      ci-ref: ${{ github.event.pull_request.head.sha }}
   codex-review:
     name: codex-review.yml validerer og poster bare trygge funn
     runs-on: ubuntu-latest

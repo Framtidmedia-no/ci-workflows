@@ -1,0 +1,3 @@
+const erProd = !erDev
+const V = ["https://vercel.live"]
+export const s = [`script-src 'self' ${erProd && V.join(" ")}`, "frame-src 'self' https://vercel.live", "report-uri /r"]

@@ -5,6 +5,7 @@
   },
   "tillegg": {
     "hent-bilde": "a72c3a47206ceaa06ee7e5916380c7ee28fa3b3d60e644ba8156c608176b7122",
-    "eslint-ingen-ra-fetch": "cccf7399664b1a644adf5bab9b2840308fee957a0b5432092229630913a5853e"
+    "eslint-ingen-ra-fetch": "cccf7399664b1a644adf5bab9b2840308fee957a0b5432092229630913a5853e",
+    "csp": "37ddd4490d7a80caef8a65334e5ef05bc0b2d81e280cdcc9d2616f5576d6d0fd"
   }
 }
