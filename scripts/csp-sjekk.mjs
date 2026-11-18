@@ -26,8 +26,13 @@ export const DELTE_VERTER = [
   'github.io', 'netlify.app', 'pages.dev', 'workers.dev', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
 ]
-/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>), som S3_VERT i src/csp.ts. */
-const S3_VERT = /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?$/
+/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>), som erS3Vert i src/csp.ts. */
+function erS3Vert(vert) {
+  // Etikett for etikett (ingen regex med nøstede kvantorer: ReDoS).
+  const etiketter = vert.split('.')
+  const aws = etiketter.lastIndexOf('amazonaws')
+  return aws > 0 && etiketter.slice(0, aws).some((e) => e === 's3' || e.startsWith('s3-'))
+}
 /** Delte verter som også gir advarsel i connect-src (kravet i FRA-2030). */
 const DELTE_I_CONNECT = ['supabase.co', 'vercel.app', 'unpkg.com']
 
@@ -148,7 +153,7 @@ export function vert(kilde) {
 
 const deltVert = (v, liste) => {
   const ren = v.replace(/^\*\./, '')
-  if (liste === DELTE_VERTER && S3_VERT.test(ren)) return 's3.amazonaws.com'
+  if (liste === DELTE_VERTER && erS3Vert(ren)) return 's3.amazonaws.com'
   return liste.find((d) => ren === d || ren.endsWith(`.${d}`)) ?? null
 }
 
