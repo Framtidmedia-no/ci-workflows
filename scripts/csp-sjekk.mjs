@@ -65,7 +65,8 @@ export function finnFiler(rot) {
 
 /** Fjerner blokk-kommentarer og hele kommentarlinjer (ikke `//` midt i en linje, som kan være en URL). */
 export function fjernKommentarer(tekst) {
-  return tekst.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/^[ \t]*\/\/.*$/gm, '')
+  // `/*` rett etter `/`, `:` eller et anførselstegn er en del av en streng (`https://*.x`, `'/*'`), ikke en kommentar.
+  return tekst.replace(/(?<![/:'"`\w])\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
@@ -132,7 +133,7 @@ export function kilder(seg) {
   const vertRe = /^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::(?:\d+|\*))?(?:\/[^\s]*)?$/i
   for (const t of seg.split(/[\s,;'"`()[\]{}$]+/)) {
     if (!t) continue
-    if (t === '*' || /^(https?|wss?|data|blob):$/.test(t)) ut.add(t)
+    if (t === '*' || /^(https?|wss?|data|blob):$/.test(t) || /^(https?|wss?):\/\/\*(?::(?:\d+|\*))?\/?$/i.test(t)) ut.add(t)
     else if (/^(https?|wss?):\/\//i.test(t) && vertRe.test(t.replace(/^(https?|wss?):\/\//i, ''))) ut.add(t)
     else if (vertRe.test(t) && (t.startsWith('*.') || t.toLowerCase() === 'vercel.live' || deltVert(vert(t), DELTE_VERTER))) ut.add(t)
   }
@@ -174,13 +175,16 @@ export function analyserFil(sti, raa) {
   let tekst = sti.endsWith('.json') || sti.endsWith('.html') ? raa : fjernKommentarer(raa)
   if (sti.endsWith('vercel.json')) {
     const csp = vercelJsonCsp(raa)
-    if (csp === null) return { harCsp: false, harReportUri: false, funn }
+    if (csp === null || csp.length === 0) return { harCsp: false, harReportUri: false, funn }
     // Hver policy som én streng, så segmenteringen ser bare CSP-en og ikke resten av fila.
     tekst = csp.map((c) => JSON.stringify(c)).join('\n')
   }
-  const harCsp = /content-security-policy/i.test(tekst) || /(?<![\w-])script-src(?![\w-])/.test(tekst)
+  const harCsp = sti.endsWith('vercel.json') || /content-security-policy/i.test(tekst) || /(?<![\w-])script-src(?![\w-])/.test(tekst)
   if (!harCsp) return { harCsp: false, harReportUri: false, funn }
-  const harReportUri = /(?<![\w-])report-uri(?![\w-])/.test(tekst)
+  // vercel.json: hver policy må ha report-uri (én policy med rapportering skjuler ikke en annen uten).
+  const harReportUri = sti.endsWith('vercel.json')
+    ? tekst.split('\n').every((p) => /(?<![\w-])report-uri(?![\w-])/.test(p))
+    : /(?<![\w-])report-uri(?![\w-])/.test(tekst)
   const linjer = tekst.split('\n')
   const linjeNr = (i) => tekst.slice(0, i).split('\n').length
 
@@ -200,7 +204,7 @@ export function analyserFil(sti, raa) {
   const liveDirektiver = []
   let liveLinje = 0
   for (const seg of segmenter(tekst)) {
-    if (!seg.direktiv.endsWith('-src')) continue
+    if (!/-src(-elem|-attr)?$/.test(seg.direktiv)) continue
     const erScript = seg.direktiv.startsWith('script-src')
     const erConnect = seg.direktiv === 'connect-src'
     for (const k of kilder(seg.tekst)) {

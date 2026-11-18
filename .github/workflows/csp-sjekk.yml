@@ -41,10 +41,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Fase 1: ingen steg skal kunne gjøre jobben rød (heller ikke en ugyldig ci-ref eller nettfeil).
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        continue-on-error: true
         with:
           persist-credentials: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        continue-on-error: true
         with:
           repository: Framtidmedia-no/ci-workflows
           ref: ${{ inputs.ci-ref }}
@@ -53,6 +56,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        continue-on-error: true
         with:
           node-version: '24'
           package-manager-cache: false
@@ -63,6 +67,10 @@ jobs:
           SJEKK_STI: ${{ inputs.path }}
         run: |
           set -uo pipefail
+          if [ ! -f .ci-workflows-csp-sjekk/scripts/csp-sjekk.mjs ]; then
+            echo "::warning title=CSP::csp-sjekk kunne ikke hente skriptet (ci-ref?), sjekken ble hoppet over"
+            exit 0
+          fi
           ut=$(node .ci-workflows-csp-sjekk/scripts/csp-sjekk.mjs "$SJEKK_STI") || true
           printf '%s\n' "$ut"
           {

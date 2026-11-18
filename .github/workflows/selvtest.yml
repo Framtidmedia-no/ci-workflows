@@ -28,6 +28,11 @@ jobs:
         with:
           node-version: '24'
       - run: node --test tests/csp-sjekk.test.mjs
+  csp-sjekk-workflow:
+    name: csp-sjekk.yml kjører ende til ende (mot dette repoet)
+    uses: ./.github/workflows/csp-sjekk.yml
+    with:
+      ci-ref: ${{ github.event.pull_request.head.sha }}
   codex-review:
     name: codex-review.yml validerer og poster bare trygge funn
     runs-on: ubuntu-latest

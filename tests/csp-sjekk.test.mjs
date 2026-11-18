@@ -129,3 +129,34 @@ test('definisjon tåler $ i identifikatorer og blander ikke sammen navn med fell
   assert.equal(definisjon(tekst, '$kilder').trim(), '["https://unpkg.com"]')
   assert.equal(definisjon(tekst, 'kilder').trim(), '2')
 })
+
+const vjson = (...policyer) => JSON.stringify({ headers: policyer.map((value, i) => ({ source: `/r${i}`, headers: [{ key: 'Content-Security-Policy', value }] })) })
+
+test('wildcard i en URL-streng leses ikke som starten på en blokk-kommentar', () => {
+  const tekst = 'export const csp = "script-src \'self\' https://*.example.no; connect-src https://*.supabase.co; report-uri /r" // */'
+  const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /wildcard-vert https:\/\/\*\.example\.no/.test(x)), m.join('\n'))
+  assert.ok(m.some((x) => /connect-src: https:\/\/\*\.supabase\.co/.test(x)))
+  assert.equal(analyserFil('src/lib/csp.ts', tekst).harReportUri, true)
+})
+
+test('https://* (skjema + bare stjerne) i script-src gir advarsel', () => {
+  const m = analyserFil('vercel.json', vjson("script-src 'self' https://*; report-uri /r")).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /script-src: wildcard-vert https:\/\/\*/.test(x)), m.join('\n'))
+})
+
+test('vercel.json med CSP uten script-src regnes som CSP; uten CSP-header ikke', () => {
+  assert.equal(analyserFil('vercel.json', vjson("default-src 'self'; report-uri /r")).harCsp, true)
+  assert.equal(analyserFil('vercel.json', JSON.stringify({ headers: [{ source: '/', headers: [{ key: 'X-Frame-Options', value: 'DENY' }] }] })).harCsp, false)
+})
+
+test('script-src-elem og script-src-attr sjekkes som script-src', () => {
+  const m = analyserFil('vercel.json', vjson("script-src 'self'; script-src-elem 'self' https://unpkg.com; script-src-attr *; report-uri /r")).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /script-src-elem: https:\/\/unpkg\.com er en delt vert/.test(x)), m.join('\n'))
+  assert.ok(m.some((x) => /script-src-attr: \* slipper inn/.test(x)))
+})
+
+test('vercel.json: hver policy må ha report-uri', () => {
+  assert.equal(analyserFil('vercel.json', vjson("default-src 'self'; report-uri /r", "default-src 'self'")).harReportUri, false)
+  assert.equal(analyserFil('vercel.json', vjson("default-src 'self'; report-uri /r", "default-src 'none'; report-uri /r")).harReportUri, true)
+})
