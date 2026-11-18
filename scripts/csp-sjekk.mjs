@@ -26,12 +26,20 @@ export const DELTE_VERTER = [
   'github.io', 'netlify.app', 'pages.dev', 'workers.dev', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
 ]
-/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>), som erS3Vert i src/csp.ts. */
+/** AWS-eide domener der S3 har endepunkter. En vert må slutte på ett av dem for å regnes som S3. */
+const AWS_SUFFIKSER = [['amazonaws', 'com', 'cn'], ['amazonaws', 'com'], ['api', 'aws']]
+/** S3-etiketter som kan stå hvor som helst før suffikset: s3.<region>, <bucket>.s3-website.<region>, s3express-<sone> … */
+const S3_ETIKETT = /^(s3|s3-(website|accesspoint|object-lambda|outposts|fips|external-1)(-[a-z0-9-]+)?|s3express-[a-z0-9-]+)$/
+
 function erS3Vert(vert) {
-  // Etikett for etikett (ingen regex med nøstede kvantorer: ReDoS).
-  const etiketter = vert.split('.')
-  const aws = etiketter.lastIndexOf('amazonaws')
-  return aws > 0 && etiketter.slice(0, aws).some((e) => e === 's3' || e.startsWith('s3-'))
+  // Etikett for etikett (ingen regex med nøstede kvantorer mot hele verten: ReDoS).
+  const etiketter = vert.toLowerCase().split('.')
+  const suffiks = AWS_SUFFIKSER.find((x) => etiketter.length > x.length && etiketter.slice(-x.length).join('.') === x.join('.'))
+  if (!suffiks) return false
+  const foran = etiketter.slice(0, -suffiks.length)
+  // Den eldre bindestrekformen (s3-eu-west-1) står alltid rett foran suffikset; andre s3-etiketter
+  // (f.eks. et lastbalanserernavn s3-assets-1.us-east-1.elb) er ikke S3.
+  return foran.some((e) => S3_ETIKETT.test(e)) || /^s3-[a-z0-9-]+$/.test(foran[foran.length - 1])
 }
 /** Delte verter som også gir advarsel i connect-src (kravet i FRA-2030). */
 const DELTE_I_CONNECT = ['supabase.co', 'vercel.app', 'unpkg.com']

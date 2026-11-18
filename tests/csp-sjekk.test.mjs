@@ -168,3 +168,11 @@ test('S3 i alle regioner, CloudFront og R2 er delte verter i script-src', () => 
   assert.ok(m.some((x) => /cloudfront\.net er en delt vert/.test(x)))
   assert.ok(m.some((x) => /r2\.dev er en delt vert/.test(x)))
 })
+
+test('S3 bare under AWS-domener: api.aws og s3express varsles, lastbalanserer og fremmed domene ikke', () => {
+  const tekst = "export const csp = \"script-src 'self' https://s3.us-east-1.api.aws https://b--usw2-az1--x-s3.s3express-usw2-az1.us-west-2.amazonaws.com https://s3.amazonaws.example.com https://s3-assets-1.us-east-1.elb.amazonaws.com; report-uri /r\""
+  const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /s3\.us-east-1\.api\.aws er en delt vert/.test(x)), m.join('\n'))
+  assert.ok(m.some((x) => /s3express-usw2-az1/.test(x)))
+  assert.ok(!m.some((x) => /amazonaws\.example\.com|elb\.amazonaws/.test(x)), m.join('\n'))
+})
