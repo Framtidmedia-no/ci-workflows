@@ -160,3 +160,11 @@ test('vercel.json: hver policy må ha report-uri', () => {
   assert.equal(analyserFil('vercel.json', vjson("default-src 'self'; report-uri /r", "default-src 'self'")).harReportUri, false)
   assert.equal(analyserFil('vercel.json', vjson("default-src 'self'; report-uri /r", "default-src 'none'; report-uri /r")).harReportUri, true)
 })
+
+test('S3 i alle regioner, CloudFront og R2 er delte verter i script-src', () => {
+  const tekst = "export const csp = \"script-src 'self' https://b.s3.eu-west-1.amazonaws.com https://d1.cloudfront.net https://pub-a.r2.dev; report-uri /r\""
+  const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /s3\.eu-west-1\.amazonaws\.com er en delt vert \(s3\.amazonaws\.com\)/.test(x)), m.join('\n'))
+  assert.ok(m.some((x) => /cloudfront\.net er en delt vert/.test(x)))
+  assert.ok(m.some((x) => /r2\.dev er en delt vert/.test(x)))
+})
