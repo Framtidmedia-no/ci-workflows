@@ -100,6 +100,39 @@ Oppgradering av gitleaks: ny versjon + begge sjekksummer i `env:`, kjør selvtes
 Oppgradering av osv-scanner: ny `OSV_VERSION` + begge sjekksummer fra `osv-scanner_SHA256SUMS` i releasen, kjør selvtesten (lokalt med `OSV_BIN=...`).
 `full-historikk` hopper over både `audit` og `osv`.
 
+## csp-sjekk.yml — statisk CSP-sjekk (FRA-2030, fase 1)
+
+Bare `::warning::`, aldri rødt (også når skriptet selv feiler). Leser CSP-en fra `next.config.*`, `vercel.json`, `index.html`,
+`proxy.ts`/`middleware.ts` (rot og `src/`) og filer under `src/`, `lib/`, `app/` med `csp`/`sikkerhetsheader`/`security-headers`
+i navnet, og varsler om:
+
+- manglende CSP, manglende `report-uri`
+- `'unsafe-eval'` uten dev-vakt på samme linje (`isDev`, `erDev`, `NODE_ENV`, `development`)
+- wildcard-vert, skjema (`https:`, `data:` …) eller delt vert (`*.vercel.app`, `vercel.com`, `*.supabase.co`, `unpkg.com`,
+  `cdn.jsdelivr.net` …) i `script-src`
+- `*.supabase.co`/`*.vercel.app`/`unpkg.com` i `connect-src`
+- `vercel.live` uten preview-vakt (`VERCEL_ENV`/`'preview'` i fila; statisk header i `vercel.json` gjelder alle miljøer)
+
+Det er tekstanalyse, ikke kjøring: konstanter i samme fil slås opp (`const X = …`), verdier fra miljøvariabler kan ikke ses.
+Standarden den måler mot er `src/csp.ts` i [framtid-security](https://github.com/Framtidmedia-no/framtid-security)
+(`docs/csp.md`). Logikken ligger i `scripts/csp-sjekk.mjs`, selvtest i `tests/csp-sjekk.test.mjs`.
+
+```yaml
+name: CSP-sjekk
+on:
+  pull_request:
+jobs:
+  csp-sjekk:
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/csp-sjekk.yml@<sha>
+    with:
+      ci-ref: <samme sha>   # valgfritt (standard main): versjonen av skriptet
+      # path: apps/web      # valgfritt: mappe som sjekkes
+    permissions:
+      contents: read
+```
+
+Lokalt: `node scripts/csp-sjekk.mjs ../<repo>` (eller `--json`). Ikke rullet ut i konsumentrepoene ennå.
+
 ## supabase-test.yml — pgTAP og skjema-lint (FRA-1754)
 
 Kundedata-nivået i sikkerhetsstandarden, som påkrevd PR-sjekk i repoer med Supabase og brukerdata. To jobber:

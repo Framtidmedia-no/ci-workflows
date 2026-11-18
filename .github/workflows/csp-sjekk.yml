@@ -1,0 +1,75 @@
+# Statisk CSP-sjekk (FRA-2030, fase 1): bare advarsler, aldri rødt.
+#
+# Leser Content-Security-Policy fra next.config.*, vercel.json, index.html, proxy.ts/middleware.ts og CSP-/header-filer
+# under src/ (best effort, tekstanalyse) og gir ::warning:: for:
+#   - manglende CSP og manglende report-uri
+#   - 'unsafe-eval' uten dev-vakt
+#   - wildcard, skjema (https:, data: …) eller delte verter (*.vercel.app, vercel.com, *.supabase.co, unpkg.com …) i script-src
+#   - *.supabase.co / *.vercel.app / unpkg.com i connect-src
+#   - vercel.live uten preview-vakt (VERCEL_ENV === 'preview')
+# Standarden den måler mot: src/csp.ts og docs/csp.md i Framtidmedia-no/framtid-security. Logikken: scripts/csp-sjekk.mjs.
+#
+# Kall fra et repo (.github/workflows/csp-sjekk.yml):
+#   name: CSP-sjekk
+#   on:
+#     pull_request:
+#   jobs:
+#     csp-sjekk:
+#       uses: Framtidmedia-no/ci-workflows/.github/workflows/csp-sjekk.yml@<sha>
+#       with:
+#         ci-ref: <samme sha>   # valgfritt, standard main: hvilken versjon av skriptet som kjøres
+name: CSP-sjekk
+
+on:
+  workflow_call:
+    inputs:
+      ci-ref:
+        description: Ref i ci-workflows som scripts/csp-sjekk.mjs hentes fra (bruk samme SHA som i uses)
+        type: string
+        default: main
+      path:
+        description: Mappe i repoet som sjekkes (standard roten)
+        type: string
+        default: '.'
+
+permissions:
+  contents: read
+
+jobs:
+  csp-sjekk:
+    name: CSP-sjekk (bare advarsler)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Framtidmedia-no/ci-workflows
+          ref: ${{ inputs.ci-ref }}
+          path: .ci-workflows-csp-sjekk
+          sparse-checkout: scripts/csp-sjekk.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Sjekk CSP
+        # Fase 1: sjekken skal aldri stoppe en PR, heller ikke hvis den selv feiler.
+        continue-on-error: true
+        env:
+          SJEKK_STI: ${{ inputs.path }}
+        run: |
+          set -uo pipefail
+          ut=$(node .ci-workflows-csp-sjekk/scripts/csp-sjekk.mjs "$SJEKK_STI") || true
+          printf '%s\n' "$ut"
+          {
+            echo '### CSP-sjekk'
+            echo
+            printf '%s\n' "$ut" | grep '^csp-sjekk:' || echo 'csp-sjekk: ingen utdata'
+            printf '%s\n' "$ut" | grep '^::warning' | sed -E 's/^::warning [^:]*::/- /' || true
+            echo
+            echo 'Bare advarsler i fase 1. Standarden: framtid-security/docs/csp.md.'
+          } >> "$GITHUB_STEP_SUMMARY"
