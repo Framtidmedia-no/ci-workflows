@@ -1,14 +1,16 @@
 // Selvtest for csp-sjekk (FRA-2030): fiktive repoer med kjente CSP-mønstre, og CLI-en skal aldri gi exit ≠ 0.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { analyserFil, sjekkRepo } from '../scripts/csp-sjekk.mjs'
+import { analyserFil, definisjon, sjekkRepo } from '../scripts/csp-sjekk.mjs'
 
 const SKRIPT = fileURLToPath(new URL('../scripts/csp-sjekk.mjs', import.meta.url))
+// Fixturene er kode i .txt-filer, så de ikke blandes med testkoden (eller skannes som kode).
+const fixtur = (navn) => readFileSync(new URL(`./fixtures/csp/${navn}`, import.meta.url), 'utf8')
 
 function repo(filer) {
   const rot = mkdtempSync(join(tmpdir(), 'csp-'))
@@ -21,25 +23,7 @@ function repo(filer) {
 const meldinger = (rot) => sjekkRepo(rot).advarsler.map((a) => a.melding)
 
 // Mønsteret fra Notar-Sol/Mobile-Drift, med rapportering og preview-vakt: skal gi 0 advarsler.
-const REN_PROXY = `
-const erProduksjon = process.env.VERCEL_ENV === 'production'
-const VERCEL_LIVE = 'https://vercel.live'
-export function proxy() {
-  const nonce = lagNonce()
-  const isDev = process.env.NODE_ENV === 'development'
-  const csp = [
-    "default-src 'self'",
-    \`script-src 'self' 'nonce-\${nonce}' 'strict-dynamic'\${isDev ? " 'unsafe-eval'" : ''}\`,
-    "style-src 'self' 'unsafe-inline'",
-    \`connect-src 'self' \${supabaseOrigin} https://o1.ingest.de.sentry.io\`,
-    // vercel.live bare utenfor prod
-    erProduksjon ? "frame-src 'none'" : \`frame-src 'self' \${VERCEL_LIVE}\`,
-    "report-uri https://o1.ingest.de.sentry.io/api/1/security/?sentry_key=abc",
-    'report-to csp-endpoint',
-  ].join('; ')
-  return csp
-}
-`
+const REN_PROXY = fixtur('ren-proxy.ts.txt')
 
 test('ren proxy med nonce, dev-vakt, preview-vakt og report-uri gir 0 advarsler', () => {
   assert.deepEqual(meldinger(repo({ 'src/proxy.ts': REN_PROXY })), [])
@@ -76,11 +60,7 @@ test('wildcard, https: og delte verter i script-src gir advarsler', () => {
 })
 
 test('konstanter fra samme fil slås opp (script-src ${scriptSrc})', () => {
-  const tekst = `
-const CDN = ["https://cdn.jsdelivr.net"]
-const scriptSrc = kilder("'self'", CDN.join(" "))
-export const csp = [\`script-src \${scriptSrc}\`, "report-uri /r"].join("; ")
-`
+  const tekst = fixtur('konstanter.ts.txt')
   const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
   assert.ok(m.some((x) => /cdn\.jsdelivr\.net er en delt vert/.test(x)), m.join('\n'))
 })
@@ -104,16 +84,16 @@ test('vercel.json: linjen peker på CSP-headeren', () => {
 test('vercel.live: statisk header og kode uten preview-vakt gir advarsel, med VERCEL_ENV ikke', () => {
   const statisk = JSON.stringify({ headers: [{ source: '/(.*)', headers: [{ key: 'Content-Security-Policy', value: "script-src 'self' https://vercel.live; report-uri /r" }] }] })
   assert.match(analyserFil('vercel.json', statisk).funn[0].melding, /vercel\.live uten preview-vakt/)
-  const kodeUten = `const erProd = !erDev\nconst V = ["https://vercel.live"]\nexport const s = [\`script-src 'self' \${erProd && V.join(" ")}\`, "frame-src 'self' https://vercel.live", "report-uri /r"]`
+  const kodeUten = fixtur('vercel-live-uten-vakt.ts.txt')
   const funn = analyserFil('src/lib/csp.ts', kodeUten).funn
   assert.equal(funn.length, 1)
   assert.match(funn[0].melding, /vercel\.live uten preview-vakt .* i script-src, frame-src/)
-  const kodeMed = `const live = process.env.VERCEL_ENV === 'preview' ? ' https://vercel.live' : ''\nexport const s = \`script-src 'self'\${live}; report-uri /r\``
+  const kodeMed = fixtur('vercel-live-med-vakt.ts.txt')
   assert.deepEqual(analyserFil('src/lib/csp.ts', kodeMed).funn, [])
 })
 
 test('kode som ikke er verter (u.origin, metodekall) leses ikke som kilder', () => {
-  const tekst = `export function csp(u) { return \`script-src 'self' \${u.origin} \${process.env.X?.trim()}; report-uri /r\` }`
+  const tekst = fixtur('ikke-verter.ts.txt')
   assert.deepEqual(analyserFil('src/lib/csp.ts', tekst).funn, [])
 })
 
@@ -142,4 +122,10 @@ test('CLI: ugyldig vercel.json krasjer ikke', () => {
   const r = spawnSync(process.execPath, [SKRIPT, repo({ 'vercel.json': '{ ikke json' })], { encoding: 'utf8' })
   assert.equal(r.status, 0)
   assert.match(r.stdout, /Fant ingen Content-Security-Policy/)
+})
+
+test('definisjon tåler $ i identifikatorer og blander ikke sammen navn med felles prefiks', () => {
+  const tekst = 'const $kilder = ["https://unpkg.com"]\nconst kilderX = 1\nconst kilder = 2\n'
+  assert.equal(definisjon(tekst, '$kilder').trim(), '["https://unpkg.com"]')
+  assert.equal(definisjon(tekst, 'kilder').trim(), '2')
 })

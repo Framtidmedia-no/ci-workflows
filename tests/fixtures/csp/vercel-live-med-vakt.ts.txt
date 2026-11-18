@@ -1,0 +1,2 @@
+const live = process.env.VERCEL_ENV === 'preview' ? ' https://vercel.live' : ''
+export const s = `script-src 'self'${live}; report-uri /r`

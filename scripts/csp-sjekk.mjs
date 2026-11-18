@@ -68,11 +68,12 @@ export function fjernKommentarer(tekst) {
   return tekst.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
-const DIREKTIV_RE = new RegExp(`(?<![\\w-])(${DIREKTIVER.map((d) => d.replace(/-/g, '\\-')).join('|')})(?![\\w-])`, 'g')
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
+const DIREKTIV_RE = new RegExp(`(?<![\\w-])(${DIREKTIVER.map(escRe).join('|')})(?![\\w-])`, 'g')
 
 /** Initialisatoren til `const|let|var NAVN = …` (til slutten av uttrykket på bunnivå), eller null. */
 export function definisjon(tekst, navn) {
-  const m = new RegExp(`(?:const|let|var)\\s+${navn}\\b[^=\\n]*=`).exec(tekst)
+  const m = new RegExp(`(?:const|let|var)\\s+${escRe(navn)}(?![\\w$])[^=\\n]*=`).exec(tekst)
   if (!m) return null
   let dybde = 0
   let i = m.index + m[0].length

@@ -1,0 +1,1 @@
+export function csp(u) { return `script-src 'self' ${u.origin} ${process.env.X?.trim()}; report-uri /r` }
