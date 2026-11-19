@@ -8,8 +8,10 @@
 //        {groupId, action: "link", uri: "/hooks/sentry/issues/link", issueId: <Linear-sakens UUID>}
 // sentry.io er control-silo (installasjoner), de.sentry.io er regionen (Sentry-saker).
 //
+// Token: SENTRY_KOBLE_TOKEN er et BRUKERtoken (event:read + event:write). App-tokenet SENTRY_WRITE_TOKEN gir 403 her, fordi
+// endepunktet bare godtar kall fra brukere eller fra Linear-appen selv.
 // CLI (token og ID-er via env, aldri argumenter):
-//   SENTRY_WRITE_TOKEN=… SENTRY_LINEAR_INSTALLASJON=… SENTRY_ISSUE_ID=… LINEAR_UUID=… LINEAR_ID=FRA-1 node koble.mjs
+//   SENTRY_KOBLE_TOKEN=… SENTRY_LINEAR_INSTALLASJON=… SENTRY_ISSUE_ID=… LINEAR_UUID=… LINEAR_ID=FRA-1 node koble.mjs
 import { fileURLToPath } from 'node:url'
 
 const CONTROL = 'https://sentry.io/api/0'
@@ -62,7 +64,7 @@ export async function kobleSentryTilLinear({ fetch: fetchFn = fetch, token, inst
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const e = process.env
   kobleSentryTilLinear({
-    token: e.SENTRY_WRITE_TOKEN ?? '',
+    token: e.SENTRY_KOBLE_TOKEN ?? '',
     installasjon: e.SENTRY_LINEAR_INSTALLASJON ?? '',
     gruppeId: e.SENTRY_ISSUE_ID ?? '',
     linearUuid: e.LINEAR_UUID ?? '',
