@@ -521,6 +521,42 @@ jobs:
           fi
           { echo "fiks=$fiks"; echo "grunn=$grunn"; } >> "$GITHUB_OUTPUT"
 
+  # Kobler Linear-saken til Sentry-saken via Sentrys offisielle Linear-integrasjon, så Linear «completed» løser Sentry-saken
+  # (også saker uten PR, f.eks. klassifisert ugyldig). Egen jobb rett etter triage: koblingen skal finnes før noen rekker å lukke
+  # Linear-saken, og skrivetokenet kommer aldri i triage-jobben der Claude kjører. Se scripts/sentry-agent/koble.mjs.
+  koble:
+    name: Koble Sentry-saken til Linear-saken
+    needs: triage
+    if: needs.triage.outputs.kjor == 'true' && needs.triage.outputs.linear_uuid != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      SA: ${{ github.workspace }}/../sentry-agent-ci
+    steps:
+      - name: Hent scripts fra ci-workflows
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Framtidmedia-no/ci-workflows
+          ref: ${{ inputs.ci-ref }}
+          path: sentry-agent-ci
+          persist-credentials: false
+      - name: Flytt scripts ut av arbeidsmappen
+        run: mv sentry-agent-ci "$SA"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+      - name: Koble via Sentrys Linear-integrasjon
+        env:
+          SENTRY_WRITE_TOKEN: ${{ secrets.SENTRY_WRITE_TOKEN }}
+          # Installasjons-UUID for Linear-appen i Sentry-organisasjonen framtid-tech-as (ikke hemmelig).
+          SENTRY_LINEAR_INSTALLASJON: 380e6b0d-21fe-4b9a-ab64-ff1252e7e6e6
+          SENTRY_ISSUE_ID: ${{ inputs.sentry_issue_id }}
+          LINEAR_UUID: ${{ needs.triage.outputs.linear_uuid }}
+          LINEAR_ID: ${{ needs.triage.outputs.linear_id }}
+        run: node "$SA/scripts/sentry-agent/koble.mjs"
+
   fiks:
     name: Fiks (agent, leverer bare en patch)
     needs: triage
