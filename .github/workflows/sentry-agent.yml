@@ -11,7 +11,7 @@
 #         sentry_issue_id: ${{ github.event.client_payload.sentry_issue_id }}
 #         project_slug: ${{ github.event.client_payload.project_slug }}
 #         ci-ref: <samme SHA>
-#       secrets: (eksplisitt, aldri inherit) SENTRY_AGENT_ANTHROPIC_KEY, SENTRY_READ_TOKEN, SENTRY_WRITE_TOKEN,
+#       secrets: (eksplisitt, aldri inherit) SENTRY_AGENT_ANTHROPIC_KEY, SENTRY_READ_TOKEN, SENTRY_WRITE_TOKEN, SENTRY_KOBLE_TOKEN (brukertoken event:read+event:write, bare jobben koble),
 #                FRAMTID_AGENT_APP_ID, FRAMTID_AGENT_APP_KEY, LINEAR_API_KEY
 #
 # Jobber, hver med minst mulig:
@@ -68,6 +68,8 @@ on:
       SENTRY_READ_TOKEN:
         required: false
       SENTRY_WRITE_TOKEN:
+        required: false
+      SENTRY_KOBLE_TOKEN:
         required: false
       FRAMTID_AGENT_APP_ID:
         required: false
@@ -549,14 +551,14 @@ jobs:
           node-version: '22'
       - name: Koble via Sentrys Linear-integrasjon
         env:
-          SENTRY_WRITE_TOKEN: ${{ secrets.SENTRY_WRITE_TOKEN }}
+          SENTRY_KOBLE_TOKEN: ${{ secrets.SENTRY_KOBLE_TOKEN }}
           # Installasjons-UUID for Linear-appen i Sentry-organisasjonen framtid-tech-as (ikke hemmelig).
           SENTRY_LINEAR_INSTALLASJON: 380e6b0d-21fe-4b9a-ab64-ff1252e7e6e6
           SENTRY_ISSUE_ID: ${{ inputs.sentry_issue_id }}
           LINEAR_UUID: ${{ needs.triage.outputs.linear_uuid }}
           LINEAR_ID: ${{ needs.triage.outputs.linear_id }}
         run: |
-          if [ -z "${SENTRY_WRITE_TOKEN:-}" ]; then echo "::warning::Mangler SENTRY_WRITE_TOKEN: Sentry-saken er ikke koblet til Linear-saken."; exit 0; fi
+          if [ -z "${SENTRY_KOBLE_TOKEN:-}" ]; then echo "::warning::Mangler SENTRY_KOBLE_TOKEN: Sentry-saken er ikke koblet til Linear-saken."; exit 0; fi
           node "$SA/scripts/sentry-agent/koble.mjs"
 
   fiks:
