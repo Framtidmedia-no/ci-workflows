@@ -555,7 +555,9 @@ jobs:
           SENTRY_ISSUE_ID: ${{ inputs.sentry_issue_id }}
           LINEAR_UUID: ${{ needs.triage.outputs.linear_uuid }}
           LINEAR_ID: ${{ needs.triage.outputs.linear_id }}
-        run: node "$SA/scripts/sentry-agent/koble.mjs"
+        run: |
+          if [ -z "${SENTRY_WRITE_TOKEN:-}" ]; then echo "::warning::Mangler SENTRY_WRITE_TOKEN: Sentry-saken er ikke koblet til Linear-saken."; exit 0; fi
+          node "$SA/scripts/sentry-agent/koble.mjs"
 
   fiks:
     name: Fiks (agent, leverer bare en patch)
