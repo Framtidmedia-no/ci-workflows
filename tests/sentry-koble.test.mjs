@@ -95,3 +95,60 @@ test('Linear-beskrivelsen har fortsatt Sentry-lenken (sentry-lukk leser den)', (
   const yml = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
   assert.match(yml, /Sentry: %s/)
 })
+
+// ---------- retry (FRA-1976): ett nytt forsøk ved 5xx/nettverksfeil, 4xx feiler høyt ----------
+test('5xx på POST: ett nytt forsøk lykkes (kobler)', async () => {
+  let posts = 0
+  const { f, kall } = mock([
+    [erGet('/external-issues/'), () => svar(200, [])],
+    [erPost('/external-issue-actions/'), () => (++posts === 1 ? svar(503, { detail: 'nede' }) : svar(200, { id: '3' }))],
+  ])
+  const ut = await kobleSentryTilLinear({ ...base, fetch: f, ventMs: 0 })
+  assert.equal(ut.status, 'koblet')
+  assert.equal(kall.filter((k) => k.metode === 'POST').length, 2)
+})
+
+test('retry sjekker eksisterende kobling på nytt: 5xx der POST faktisk gikk igjennom gir «allerede», ikke dobbel kobling', async () => {
+  let gets = 0
+  const { f, kall } = mock([
+    [erGet('/external-issues/'), () => svar(200, ++gets === 1 ? [] : [{ serviceType: 'linear', webUrl: 'https://linear.app/x/issue/FRA-2042/y' }])],
+    [erPost('/external-issue-actions/'), () => svar(502, {})],
+  ])
+  const ut = await kobleSentryTilLinear({ ...base, fetch: f, ventMs: 0 })
+  assert.equal(ut.status, 'allerede')
+  assert.equal(kall.filter((k) => k.metode === 'POST').length, 1)
+})
+
+test('nettverksfeil (fetch kaster): ett nytt forsøk', async () => {
+  let n = 0
+  const f = async (url, init = {}) => {
+    if (++n === 1) throw new TypeError('fetch failed')
+    if ((init.method ?? 'GET') === 'GET') return svar(200, [])
+    return svar(200, { id: '4' })
+  }
+  const ut = await kobleSentryTilLinear({ ...base, fetch: f, ventMs: 0 })
+  assert.equal(ut.status, 'koblet')
+})
+
+test('vedvarende 5xx: feiler etter ett nytt forsøk (ikke flere)', async () => {
+  const { f, kall } = mock([
+    [erGet('/external-issues/'), () => svar(200, [])],
+    [erPost('/external-issue-actions/'), () => svar(500, {})],
+  ])
+  await assert.rejects(kobleSentryTilLinear({ ...base, fetch: f, ventMs: 0 }), /500/)
+  assert.equal(kall.filter((k) => k.metode === 'POST').length, 2)
+})
+
+test('4xx forsøkes ikke på nytt (403 feiler høyt med ett kall)', async () => {
+  const { f, kall } = mock([
+    [erGet('/external-issues/'), () => svar(200, [])],
+    [erPost('/external-issue-actions/'), () => svar(403, { detail: 'nei' })],
+  ])
+  await assert.rejects(kobleSentryTilLinear({ ...base, fetch: f, ventMs: 0 }), /403/)
+  assert.equal(kall.filter((k) => k.metode === 'POST').length, 1)
+})
+
+test('sentry-agent.yml: koble-jobben kjører også for eksisterende sak (koble_kun)', () => {
+  const yml = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
+  assert.match(yml, /koble_kun == 'true'/)
+})
