@@ -48,7 +48,8 @@ test('finnRepo krever agent === true (ikke truthy)', () => {
 
 test('sentry-repoer.json: alle Gange-Rolv-slugs og alt i Gange-Rolv-AS står uten agent', () => {
   for (const s of ['gangerolv-catering', 'gangerolv-drift', 'gangerolv-gaver', 'gangerolv-heimelaga', 'gangerolv-no', 'eurosparmoa', 'myrvoll-lunde-it-drift',
-    'teamgoodfella', 'teamjoker', 'tresfjordidrettslag', 'ake-spill', 'hjemmesentral', 'matkasse', 'sammenforlaget']) {
+    'teamgoodfella', 'teamjoker', 'tresfjordidrettslag', 'ake-spill', 'hjemmesentral', 'matkasse', 'sammenforlaget',
+    'aafk-admin', 'aafk-mobil', 'ask-app', 'brannappen']) {
     assert.ok(KART[s], `${s} mangler i sentry-repoer.json`)
     assert.equal(KART[s].agent, false, `${s} skal ha agent:false`)
     assert.equal(finnRepo(s, KART), null)
