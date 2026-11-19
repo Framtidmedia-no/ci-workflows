@@ -111,9 +111,10 @@ jobs:
       base_sha: ${{ steps.oppslag.outputs.base_sha }}
       har_dev: ${{ steps.oppslag.outputs.har_dev }}
       sentry_url: ${{ steps.sentry.outputs.sentry_url }}
-      linear_id: ${{ steps.linear.outputs.linear_id }}
-      linear_uuid: ${{ steps.linear.outputs.linear_uuid }}
-      linear_url: ${{ steps.linear.outputs.linear_url }}
+      linear_id: ${{ steps.linear.outputs.linear_id || steps.finn.outputs.linear_id }}
+      linear_uuid: ${{ steps.linear.outputs.linear_uuid || steps.finn.outputs.linear_uuid }}
+      linear_url: ${{ steps.linear.outputs.linear_url || steps.finn.outputs.linear_url }}
+      koble_kun: ${{ steps.finn.outputs.koble_kun }}
       branch: ${{ steps.linear.outputs.branch }}
     env:
       ISSUE_ID: ${{ inputs.sentry_issue_id }}
@@ -310,17 +311,27 @@ jobs:
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           SENTRY_URL: ${{ steps.sentry.outputs.sentry_url }}
+          TEAM_KEY: ${{ vars.LINEAR_TEAM_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gql() { curl -sS --fail-with-body --max-time 30 https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d "$1"; }
-          svar=$(gql "$(jq -n --arg u "$SENTRY_URL" '{query:"query($u:String!){attachmentsForURL(url:$u){nodes{issue{id identifier url state{type}}}}}",variables:{u:$u}}')")
-          sak=$(jq -c '[.data.attachmentsForURL.nodes[].issue | select(. != null)][0] // empty' <<<"$svar")
+          # Oppslaget finner saken via sentry-vedlegget, og ellers via Sentry-lenken i beskrivelsen (finn-sak.mjs). Da gir en
+          # feilet koble-jobb (ingen vedlegg) ikke en duplikat. Feil i oppslaget stopper kjøringen, aldri «ny sak».
+          funn=$(TEAM_KEY="${TEAM_KEY:-FRA}" node "$SA/scripts/sentry-agent/finn-sak.mjs")
+          sak=$(jq -c '.sak // empty' <<<"$funn")
           if [ -z "$sak" ]; then
             echo "Ingen Linear-sak for $SENTRY_URL. Ny sak."
             { echo "kjor=true"; echo "ny=true"; echo "suffiks="; } >> "$GITHUB_OUTPUT"; exit 0
           fi
+          echo "Fant eksisterende sak via $(jq -r .kilde <<<"$funn")."
           id=$(jq -r '.identifier' <<<"$sak"); lav="${id,,}"
+          # Saken finnes: koble-jobben kjører uansett (idempotent), så en sak uten Sentry-kobling repareres selv om vi ikke kjører agenten på nytt.
+          {
+            echo "koble_kun=true"
+            echo "linear_id=$id"
+            echo "linear_uuid=$(jq -r '.id' <<<"$sak")"
+            echo "linear_url=$(jq -r '.url' <<<"$sak")"
+          } >> "$GITHUB_OUTPUT"
           heads=$(gh pr list --repo "$REPO" --label sentry-agent --state all --limit 200 --json headRefName,state)
           if jq -e --arg p "sentry/$lav-" '[.[] | select(.state == "OPEN" and (.headRefName | startswith($p)))] | length > 0' <<<"$heads" >/dev/null; then
             echo "::notice::En agent-PR for $id er fortsatt åpen. Hopper over."
@@ -528,7 +539,7 @@ jobs:
   koble:
     name: Koble Sentry-saken til Linear-saken
     needs: triage
-    if: needs.triage.outputs.kjor == 'true' && needs.triage.outputs.linear_uuid != ''
+    if: (needs.triage.outputs.kjor == 'true' || needs.triage.outputs.koble_kun == 'true') && needs.triage.outputs.linear_uuid != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

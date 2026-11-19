@@ -56,4 +56,5 @@ jobs:
       - run: node --test tests/sentry-agent.test.mjs
       - run: node --test tests/sentry-lukk.test.mjs
       - run: node --test tests/sentry-koble.test.mjs
+      - run: node --test tests/sentry-finn-sak.test.mjs
       - run: bash tests/sentry-agent-testbevis.test.sh
