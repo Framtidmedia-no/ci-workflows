@@ -483,8 +483,7 @@ jobs:
               | jq -c '.data.issueCreate.issue // empty')
             [ -n "$sak" ] || { echo "::error::Kunne ikke opprette Linear-sak"; exit 1; }
             uuid=$(jq -r .id <<<"$sak"); id=$(jq -r .identifier <<<"$sak"); url=$(jq -r .url <<<"$sak")
-            gql "$(jq -n --arg i "$uuid" --arg u "$SENTRY_URL" '{query:"mutation($i:String!,$u:String!,$t:String){attachmentLinkURL(issueId:$i,url:$u,title:$t){success}}",variables:{i:$i,u:$u,t:"Sentry-sak"}}')" >/dev/null
-            echo "Opprettet $id"
+            echo "Opprettet $id (koblingen til Sentry gjøres av jobben koble, ikke med api-vedlegg)"
           else
             uuid="$FINNES_UUID"; id="$FINNES_ID"; url="$FINNES_URL"
             tekst=$(printf 'Regresjon: Sentry-saken er tilbake.\n\n%s' "$diagnose")

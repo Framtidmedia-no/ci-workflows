@@ -82,3 +82,16 @@ test('kaster ved ugyldig input før noe nettverkskall', async () => {
   await assert.rejects(kobleSentryTilLinear({ ...base, gruppeId: '1/../2', fetch: f }), /Ugyldig input/)
   assert.equal(kall.length, 0)
 })
+
+// Linear dedupliserer på URL: et api-vedlegg (attachmentLinkURL) med Sentry-URL-en FØR link-kallet hindrer at Linear
+// registrerer koblingen (ingen «sentry»-vedlegg, ingen auto-resolve). Linkingen skal derfor være eneste kobling.
+import { readFileSync } from 'node:fs'
+test('sentry-agent.yml lager ikke api-vedlegg med Sentry-URL-en (attachmentLinkURL)', () => {
+  const yml = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
+  assert.ok(!/attachmentLinkURL/.test(yml), 'attachmentLinkURL blokkerer koblingen via Sentrys Linear-integrasjon')
+})
+
+test('Linear-beskrivelsen har fortsatt Sentry-lenken (sentry-lukk leser den)', () => {
+  const yml = readFileSync(new URL('../.github/workflows/sentry-agent.yml', import.meta.url), 'utf8')
+  assert.match(yml, /Sentry: %s/)
+})
