@@ -73,7 +73,12 @@ jobs:
   runner:
     name: Velg runner
     if: ${{ !inputs.hopp-over }}
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@285105473956f353192b9887c99706d319c2013b # main
+    runs-on: ubuntu-latest
+    outputs:
+      etiketter: ${{ steps.x.outputs.ingen }}
+    steps:
+      - id: x
+        run: exit 1
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)

@@ -36,7 +36,7 @@ jobs:
     name: lint-hoppet
     uses: ./.github/workflows/lint-gate.yml
     with:
-      hopp-over: true
+      hopp-over: false
     permissions:
       contents: read
       actions: read
