@@ -236,7 +236,9 @@ Rekkefølge med `sparing: true`, og ved all tvil kjøres alt:
 1. Endringen rører `.github/`, lockfiler, `package.json`, migrasjoner, Supabase-konfig eller sikkerhetsrelevant konfig: **full CI**.
 2. Bare dokumentasjon (`docs/**/*.md|txt` og `*.md` på rot, ikke `CLAUDE.md`/`AGENTS.md`/`.mdx`): hopp over tunge jobber.
 3. Samme tree-SHA har en fullført **push**-kjøring av samme workflow på en beskyttet branch, der hver jobb i `bevis-jobber`
-   har `success`: hopp over tunge jobber. PR-kjøringer er aldri bevis, og en hoppet jobb er aldri bevis.
+   har `success`, og alle vellykkede jobber kjørte på **GitHub sine runnere**: hopp over tunge jobber. PR-kjøringer, hoppede jobber
+   og kjøringer på egne runnere er aldri bevis. De egne runnerne er persistente, så et repo som kjører på dem får docs- og
+   Supabase-hopp, men ikke gjenbruk av tree.
 4. Ellers kjører tunge jobber. Supabase hoppes over bare når ingen filer under `supabase/` er endret.
 
 ### Ta det i bruk i et konsumentrepo
@@ -248,6 +250,7 @@ Bruk `<sha>` fra siste commit på `main` her. `bevis-jobber` er de **eksakte** s
  name: CI
  on:
    pull_request:
++    types: [opened, synchronize, reopened, edited]
 +  push:
 +    branches: [main, dev]
 +concurrency:
@@ -289,7 +292,11 @@ Regler som må følges:
   og vente. Send `hopp-over` inn.
 - **Beholder navnet:** `Lint-port (…)` og `Supabase pgTAP og lint` blir `skipped`, som teller som bestått. Den nøstede `Velg runner`
   blir også `skipped`, så den skal ikke være en påkrevd sjekk.
-- **Ikke koble til:** `sikkerhet.yml`, `krav-sikkerhet` og CodeQL. De har ingen hopp-input og skal kjøre på hver PR og hver push til `main`.
+- **`edited` er påkrevd.** Sjekkene følger head-SHA-en, så uten den kan en PR flyttes fra `dev` til `main` og beholde en hoppet
+  sjekk. Ved endret base vurderes alt på nytt. Ved endret tittel eller tekst gjentas ikke tung CI hvis siste kjøring på samme
+  head og base er grønn. Bruk ikke et eget `if` på `edited`: en hoppet kjøring ville erstattet en rød sjekk med `skipped`.
+- **Secret-skanning og sikkerhet kobles aldri til sparingen.** `sikkerhet.yml`, `krav-sikkerhet` og CodeQL har ingen hopp-input,
+  ligger i egen workflow og kjører på hver PR og **alltid på push til `dev` og `main`**.
 - Ikke sett `concurrency` med avbrudd på workflows som deployer eller migrerer.
 - **Egne jobber som bruker `velg-runner` direkte** skal ha fork-vakt og fallback, ellers blir et feilet valg en hoppet sjekk:
 
@@ -306,7 +313,8 @@ en jobb. Sparingen gjør ikke dette verre, men beskytter heller ikke mot det: ve
 Verifiser sparingen: `gh run view <id> --json jobs --jq '.jobs[] | [.name,.conclusion] | @tsv'` på en synk-PR skal vise `skipped` på de
 tunge jobbene, og Summary skal vise grunnen fra `tree-gronn`. En PR med endret kode skal vise `success`.
 
-`velg-runner.yml`: med `CI_ALDRI_OVERLOP=true` kjører selve valget på egne runnere og koster ingen hostet minuttjobb. Repoer med overløp
+`velg-runner.yml` sender fork, bot-kontoer (Renovate, Dependabot), `renovate/`- og `dependabot/`-brancher, push og `workflow_dispatch` på
+ubeskyttede refs og ukjente hendelser til GitHub sine runnere. Med `CI_ALDRI_OVERLOP=true` kjører selve valget på egne runnere og koster ingen hostet minuttjobb. Repoer med overløp
 beholder én hostet jobb, ellers ville valget stått i den samme køen. Når `hopp-over` er på, startes den ikke i det hele tatt.
 
 Selvtest: `bash tests/tree-gronn.test.sh` (falsk `gh`, ingen nettverk) og `selvtest-ci-sparing.yml` (ekte hendelser).

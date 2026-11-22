@@ -4,6 +4,7 @@
 name: Selvtest CI-sparing
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 concurrency:
@@ -30,7 +31,10 @@ jobs:
     steps:
       - env:
           GRUNN: ${{ needs.tre.outputs.grunn }}
-        run: echo "Tung jobb kjørte. Avgjørelse fra tree-gronn - $GRUNN"
+          REF_BESKYTTET: ${{ github.ref_protected }}
+        run: |
+          echo "Tung jobb kjørte. Avgjørelse fra tree-gronn - $GRUNN"
+          echo "ref_protected=$REF_BESKYTTET"
   # Påkrevde sjekker inne i en gjenbrukt workflow må beholde navnet når de hoppes over.
   lint-hoppet:
     name: lint-hoppet
