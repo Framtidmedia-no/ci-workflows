@@ -110,7 +110,7 @@ jobs:
   pgtap:
     name: Supabase pgTAP og lint
     if: ${{ !inputs.hopp-over }}
-    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
+    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 20
     defaults:
       run:

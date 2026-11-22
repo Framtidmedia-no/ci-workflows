@@ -78,8 +78,10 @@ jobs:
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
     needs: runner
-    if: ${{ !inputs.hopp-over }}
-    runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.etiketter) }}
+    # FRA-2060: !cancelled() gjør at et feilet runner-valg gir en kjøring på GitHub (fallback under),
+    # ikke en hoppet påkrevd sjekk som ser grønn ut.
+    if: ${{ !cancelled() && !inputs.hopp-over }}
+    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON(needs.runner.outputs.etiketter || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       WD: ${{ inputs.working-directory }}
