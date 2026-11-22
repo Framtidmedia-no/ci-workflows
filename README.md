@@ -344,3 +344,5 @@ Hvordan den er bygget: et steg henter diffen (`gh pr diff`) til en fil, Codex le
 svarer med JSON etter et fast skjema, og et siste steg validerer svaret og legger inn én review (filer må finnes i diffen, tak på
 antall og lengde, hemmeligheter fjernet). Modellen velger aldri kommando mot GitHub. Postelogikken testes i
 `tests/codex-review.test.py`, som kjøres av `selvtest.yml`.
+
+<!-- FRA-2060 testendring, merges ikke -->
