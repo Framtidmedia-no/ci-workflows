@@ -19,6 +19,13 @@
 #      - Hver jobb i `bevis-jobber` må ha `success`. En hoppet jobb er `skipped`, så et hopp blir aldri bevis
 #        for neste hopp.
 #      - PR-kjøringer teller aldri her: de styres av PR-ens egen workflow-fil og tester et tree vi ikke kan se.
+#      - Alle vellykkede jobber i beviset må ha kjørt på GitHub sine engangsrunnere. De egne runnerne er persistente,
+#        så PR-kode kan ha lagt igjen noe som gjør en senere kjøring falskt grønn. Runner-gruppen avgjør, ikke etiketter,
+#        som en egen runner kan sette selv. Av samme grunn kjører selve avgjørelsen hostet når sparing er på.
+#
+#    Retarget: en PR kan flyttes fra dev til main uten ny commit, og sjekkene følger head-SHA-en. Konsumenten må derfor
+#    trigge på `edited`. Base endret: alt vurderes på nytt mot ny base. Bare tittel eller tekst endret: tung CI gjentas
+#    ikke hvis siste kjøring på samme head og base er grønn. Ellers kjører alt, så en rød sjekk aldri blir «skipped».
 #
 # Jobben henter aldri PR-kode. Alt kommer fra GitHub-API-et, og filnavn behandles bare som data i jq.
 #
@@ -71,7 +78,7 @@ jobs:
   sjekk:
     name: Tre allerede grønn?
     # FRA-947: variabelen CI_RUNS_ON (JSON) i kallende repo styrer runner. Uten den: ubuntu-latest.
-    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (inputs.sparing || startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 3
     outputs:
       skip: ${{ steps.s.outputs.skip }}
@@ -94,6 +101,9 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BEFORE_SHA: ${{ github.event.before }}
+          HANDLING: ${{ github.event.action }}
+          BASE_ENDRET: ${{ github.event.changes.base && 'true' || 'false' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # >>> avgjor
           set -uo pipefail
@@ -150,6 +160,28 @@ jobs:
             [ "$(gh api "repos/${REPO}/branches/${kodet}" --jq .protected 2>/dev/null)" = "true" ]
           }
           beskyttet "$gren" || full "branchen $gren er ikke beskyttet"
+
+          # --- PR redigert uten ny base: gjenta ikke tung CI hvis siste kjøring på samme head og base er grønn.
+          # En rød, pågående eller avbrutt kjøring gir vanlig vurdering, så «skipped» aldri erstatter rødt.
+          forrige_gronn() {
+            local wf_id
+            [ -n "${PR_HEAD_SHA:-}" ] || return 1
+            wf_id=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq .workflow_id 2>/dev/null) || return 1
+            gh api "repos/${REPO}/actions/workflows/${wf_id}/runs?head_sha=${PR_HEAD_SHA}&event=pull_request&per_page=20" \
+              > "$arb/forrige.json" 2>/dev/null || return 1
+            jq -e --argjson selv "$RUN_ID" --arg r "$REPO" --arg b "$gren" '
+              [.workflow_runs[] | select(.id != $selv)] as $k
+              | ($k | max_by(.id)) as $siste
+              | $siste != null
+                and $siste.status == "completed" and $siste.conclusion == "success"
+                and $siste.head_repository.full_name == $r
+                and any($siste.pull_requests[]?; .base.ref == $b)
+                and all($k[]; (.conclusion // "") | IN("failure", "timed_out", "startup_failure", "action_required") | not)
+            ' "$arb/forrige.json" > /dev/null 2>&1
+          }
+          if [ "$EVENT" = "pull_request" ] && [ "${HANDLING:-}" = "edited" ] && [ "${BASE_ENDRET:-false}" != "true" ]; then
+            if forrige_gronn; then svar true true "PR redigert uten ny base, og siste kjøring på samme head og base er grønn"; fi
+          fi
 
           # --- Hva endres mot basen? Sammenligner hele treene, så filgrensen i compare-API-et ikke gjelder.
           gh api "repos/${REPO}/git/commits/${SHA}" > "$arb/commit.json" 2>/dev/null || full "fant ikke commit"
@@ -215,9 +247,13 @@ jobs:
             if jq -e --arg navn "$BEVIS_JOBBER" '
                  ($navn | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $krav
                  | .jobs as $j
-                 | ($krav | length) > 0
+                 | def hostet: .runner_group_id == 0 and .runner_group_name == "GitHub Actions"
+                     and ((.runner_name // "") | startswith("GitHub Actions"))
+                     and (any(.labels[]?; . == "self-hosted") | not);
+                   ($krav | length) > 0
                    and all($krav[]; . as $k
                      | any($j[]; .name == $k) and all($j[] | select(.name == $k); .conclusion == "success"))
+                   and all($j[] | select(.conclusion == "success" and (.name | test("(^|/ )Velg runner$") | not)); hostet)
                ' "$arb/jobber.json" > /dev/null 2>&1; then
               svar true true "tree ${tre} er grønt i kjøring ${id} på ${kgren}"
             fi

@@ -33,7 +33,20 @@ kjoring() { # id sha gren [event] [head-repo]
     "$1" "$2" "$3" "${4:-push}" "${5:-$R}"
 }
 jobber() { sett "repos/$R/actions/runs/$1/jobs?per_page=100" "{\"jobs\":[$2]}"; }
-jobb() { printf '{"name":"%s","conclusion":"%s"}' "$1" "$2"; }
+jobb() { # navn konklusjon: GitHub-hostet, slik API-et faktisk svarer
+  printf '{"name":"%s","conclusion":"%s","labels":["ubuntu-latest"],"runner_name":"GitHub Actions 1000098532","runner_group_id":0,"runner_group_name":"GitHub Actions"}' "$1" "$2"
+}
+egen_jobb() { # navn konklusjon [etikett]: persistent runner
+  printf '{"name":"%s","conclusion":"%s","labels":["self-hosted","%s"],"runner_name":"framtid-ci-2-e9","runner_group_id":3,"runner_group_name":"framtid-ci"}' "$1" "$2" "${3:-framtid-ci}"
+}
+forrige() { # id status konklusjon base-ref [id status konklusjon base-ref ...]: tidligere kjøringer på PR-headen, nyeste først
+  local inn="" t=100
+  while [ $# -gt 0 ]; do
+    inn="${inn:+$inn,}{\"id\":$1,\"status\":\"$2\",\"conclusion\":\"$3\",\"created_at\":\"2026-11-22T12:$((t--)):00Z\",\"event\":\"pull_request\",\"head_sha\":\"H\",\"head_repository\":{\"full_name\":\"$R\"},\"pull_requests\":[{\"base\":{\"ref\":\"$4\"}}]}"
+    shift 4
+  done
+  sett "repos/$R/actions/workflows/77/runs?head_sha=H&event=pull_request&per_page=20" "{\"workflow_runs\":[$inn]}"
+}
 
 # Grunnoppsett: base B (tree TB), testet commit M (tree TM), en grønn push-kjøring på dev med tree TM.
 oppsett() {
@@ -57,7 +70,8 @@ kjor() { # skriver utfallet som «tung supabase skip»
   env PATH="$TMP/bin:$PATH" FX="$FX" GITHUB_OUTPUT="$ut" GITHUB_STEP_SUMMARY=/dev/null \
     REPO="$R" SHA=M RUN_ID=500 EVENT="${EVENT:-pull_request}" SPARING="${SPARING:-true}" \
     BEVIS_JOBBER="${BEVIS-$'Test\nLint'}" BASE_REF="${BASE_REF-dev}" REF_NAME="${REF_NAME-1/merge}" \
-    HEAD_REPO="${HEAD_REPO-$R}" BEFORE_SHA="${BEFORE-B}" bash "$TMP/avgjor.sh" >"$TMP/logg" 2>&1
+    HEAD_REPO="${HEAD_REPO-$R}" BEFORE_SHA="${BEFORE-B}" HANDLING="${HANDLING-synchronize}" \
+    BASE_ENDRET="${BASE_ENDRET-false}" PR_HEAD_SHA="${PR_HEAD_SHA-H}" bash "$TMP/avgjor.sh" >"$TMP/logg" 2>&1
   local rc=$?
   [ "$rc" = 0 ] || { cat "$TMP/logg" >&2; echo "krasj($rc)"; return; }
   verdi() { grep "^$1=" "$ut" | tail -1 | cut -d= -f2-; }
@@ -88,6 +102,48 @@ forvent "pull_request-kjøring er ikke bevis" "false true false"
 oppsett; sett "repos/$R/actions/workflows/77/runs?event=push&status=success&per_page=30" "{\"workflow_runs\":[$(kjoring 9 E dev push annen/fork)]}"
 forvent "kjøring fra annet repo er ikke bevis" "false true false"
 oppsett; BEVIS="" forvent "uten bevis-jobber ingen gjenbruk" "false true false"
+
+# --- Bevis fra persistente runnere godtas ikke: PR-kode kan ha lagt igjen noe der
+oppsett; jobber 9 "$(egen_jobb Test success),$(jobb Lint success)"
+forvent "påkrevd jobb på egen runner er ikke bevis" "false true false"
+oppsett; jobber 9 "$(jobb Test success),$(jobb Lint success),$(egen_jobb 'supabase / pgTAP' success)"
+forvent "annen vellykket jobb på egen runner er ikke bevis" "false true false"
+oppsett; jobber 9 "$(egen_jobb Test success ubuntu-latest),$(jobb Lint success)"
+forvent "egen runner med etiketten ubuntu-latest lurer ikke sjekken" "false true false"
+oppsett; jobber 9 "$(jobb Test success),$(jobb Lint success),$(egen_jobb 'lint / Velg runner' success)"
+forvent "runner-valget alene på egen runner stopper ikke bevis" "true true true"
+oppsett; jobber 9 '{"name":"Test","conclusion":"success"},{"name":"Lint","conclusion":"success"}'
+forvent "jobb uten runner-felt er ikke bevis" "false true false"
+
+# --- Retarget og redigering av PR
+uten_bevis() { oppsett; commit E TX D; tre TX "$(blob x y)"; }
+uten_bevis; forrige 400 completed success dev
+HANDLING=edited forvent "redigert PR med grønn forrige kjøring på samme base gjentar ikke tungt" "true true true"
+uten_bevis; forrige 400 completed failure dev
+HANDLING=edited forvent "redigert PR maskerer aldri en rød kjøring" "false true false"
+uten_bevis; forrige 401 completed success dev 400 completed failure dev
+HANDLING=edited forvent "en rød kjøring på samme head (kan være kjørt om) maskeres ikke" "false true false"
+uten_bevis; forrige 401 in_progress null dev 400 completed success dev
+HANDLING=edited forvent "pågående nyeste kjøring teller ikke" "false true false"
+uten_bevis; forrige 401 completed cancelled dev 400 completed success dev
+HANDLING=edited forvent "avbrutt nyeste kjøring teller ikke" "false true false"
+uten_bevis; forrige 400 completed success main
+HANDLING=edited forvent "grønn kjøring mot annen base teller ikke" "false true false"
+uten_bevis; sett "repos/$R/actions/workflows/77/runs?head_sha=H&event=pull_request&per_page=20" '{"workflow_runs":[]}'
+HANDLING=edited forvent "redigert PR uten tidligere kjøring kjører" "false true false"
+uten_bevis; HANDLING=edited forvent "oppslag av forrige kjøring feiler" "false true false"
+uten_bevis; forrige 500 completed success dev
+HANDLING=edited forvent "kjøringen selv er ikke sitt eget bevis" "false true false"
+uten_bevis; forrige 400 completed success dev
+HANDLING=edited BASE_ENDRET=true forvent "retarget vurderes på nytt mot ny base" "false true false"
+oppsett; forrige 400 completed success dev
+HANDLING=edited BASE_ENDRET=true forvent "retarget med gyldig bevis for samme tree hopper" "true true true"
+uten_bevis; forrige 400 completed success dev
+HANDLING=edited BASE_REF=fri forvent "redigert PR mot ubeskyttet base gir full CI" "$FULL"
+uten_bevis; forrige 400 completed success dev
+HANDLING=edited HEAD_REPO=annen/fork forvent "redigert fork-PR gir full CI" "$FULL"
+uten_bevis; forrige 400 completed success dev
+HANDLING=edited PR_HEAD_SHA="" forvent "redigert PR uten head-SHA kjører" "false true false"
 
 # --- Endringer som alltid gir full CI, også med gyldig bevis
 for sti in .github/workflows/ci.yml pnpm-lock.yaml package-lock.json apps/web/yarn.lock package.json \

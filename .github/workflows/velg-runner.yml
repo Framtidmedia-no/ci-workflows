@@ -50,12 +50,12 @@ jobs:
     # FRA-2060: med CI_ALDRI_OVERLOP=true er svaret alltid egne runnere, så selve valget kan kjøre der og
     # koster ingen hostet minuttjobb. Repoer MED overløp må velge fra en hostet runner: er alle egne opptatt,
     # ville valget ellers stått i den samme køen det skal hjelpe oss ut av. Jobben henter aldri PR-kode.
-    # sentry/* og fork-PR-er blir på GitHub sine engangsrunnere.
-    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || (vars.CI_ALDRI_OVERLOP == 'true' && contains(vars.CI_RUNS_ON, 'self-hosted')) && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
+    # sentry/*, fork, bot-kontoer, ubeskyttede refs og ukjente hendelser blir på GitHub sine engangsrunnere.
+    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository) || github.event.pull_request.user.type == 'Bot' || github.event.sender.type == 'Bot' || endsWith(github.actor, '[bot]') || endsWith(github.triggering_actor, '[bot]') || startsWith(github.head_ref, 'renovate/') || startsWith(github.head_ref, 'dependabot/') || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !github.ref_protected) || !contains(fromJSON('["pull_request","push","workflow_dispatch","schedule","merge_group"]'), github.event_name)) && 'ubuntu-latest' || (vars.CI_ALDRI_OVERLOP == 'true' && contains(vars.CI_RUNS_ON, 'self-hosted')) && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 3
     outputs:
       # Fork får GitHub sin runner også hvis steget under skulle feile og kalleren har satt egne etiketter.
-      etiketter: ${{ (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository) && '"ubuntu-latest"' || steps.velg.outputs.etiketter || inputs.github-etiketter }}
+      etiketter: ${{ (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository) && '"ubuntu-latest"' || steps.velg.outputs.etiketter || (contains(inputs.github-etiketter, 'self-hosted') && '"ubuntu-latest"' || inputs.github-etiketter) }}
     steps:
       - id: velg
         # Jobben skal aldri feile: en feilet jobb hopper over alt som avhenger av den, og hoppet teller som grønt.
@@ -73,6 +73,12 @@ jobs:
           HENDELSE: ${{ github.event_name }}
           PR_NUMMER: ${{ github.event.pull_request.number }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          # Satt av GitHub, kan ikke styres fra PR-innhold.
+          PR_FORFATTER_TYPE: ${{ github.event.pull_request.user.type }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          AKTOR: ${{ github.actor }}
+          UTLOSER: ${{ github.triggering_actor }}
+          REF_BESKYTTET: ${{ github.ref_protected }}
         run: |
           # >>> velg
           valg="$GITHUB_VALG"
@@ -84,6 +90,19 @@ jobs:
             pull_request|pull_request_target) [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ] || er_fork=true ;;
             *) if [ -n "${PR_NUMMER:-}" ] && [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then er_fork=true; fi ;;
           esac
+          # FRA-2060: egne runnere er persistente. Alt som kjører tredjepartskode eller kode fra ubeskyttede refs
+          # holdes unna. Listen over hendelser er en tillatelsesliste: alt ukjent går til GitHub.
+          hostet_grunn=""
+          [ "$er_fork" = "true" ] && hostet_grunn="PR fra fork"
+          if [ "${PR_FORFATTER_TYPE:-}" = "Bot" ] || [ "${SENDER_TYPE:-}" = "Bot" ] || [[ "${AKTOR:-}" == *"[bot]" ]] || [[ "${UTLOSER:-}" == *"[bot]" ]]; then
+            hostet_grunn="bot-konto"
+          fi
+          case "$GREN" in renovate/*|dependabot/*) hostet_grunn="avhengighetsbranch" ;; esac
+          case "$HENDELSE" in
+            pull_request|schedule|merge_group) ;;
+            push|workflow_dispatch) [ "${REF_BESKYTTET:-}" = "true" ] || hostet_grunn="$HENDELSE på ubeskyttet ref" ;;
+            *) hostet_grunn="hendelsen $HENDELSE" ;;
+          esac
           # Sentral status (alle repoer): fersk (maks 3 min, se toppen) og alle egne runnere opptatt.
           opptatt_sentralt=0; totalt_sentralt=0; alder_sentralt=999999
           # Bare «tall,tall,tall» godtas, så verdien aldri kan tolkes som kode i aritmetikken under.
@@ -94,10 +113,10 @@ jobs:
           sentralt_fullt() {
             [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 180 ]
           }
-          if [ "$er_fork" = "true" ]; then
+          if [ -n "$hostet_grunn" ]; then
             # Først i kjeden, så ingen annen gren kan sette $BASE. Også github-etiketter overstyres.
             valg='"ubuntu-latest"'
-            grunn="PR fra fork: kjøres bare på GitHub sine engangsrunnere"
+            grunn="$hostet_grunn: kjøres bare på GitHub sine engangsrunnere"
           elif [[ "$GREN" == sentry/* ]]; then
             # Agent-brancher (FRA-1976) kjører kode fra Sentry-agenten. Den skal aldri på faste egne runnere,
             # der den kunne lagt igjen noe for neste jobb: alltid GitHub sine engangsrunnere.
