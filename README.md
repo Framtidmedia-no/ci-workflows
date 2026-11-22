@@ -261,7 +261,6 @@ Bruk `<sha>` fra siste commit på `main` her. `bevis-jobber` er de **eksakte** s
 +      sparing: true
 +      bevis-jobber: |
 +        lint-port / Lint-port (endrede filer + terskel mot base)
-+        supabase-test / Supabase pgTAP og lint
 +        test
    lint-port:
 +    needs: tre
@@ -283,6 +282,8 @@ Bruk `<sha>` fra siste commit på `main` her. `bevis-jobber` er de **eksakte** s
 
 Regler som må følges:
 
+- **Ikke før opp Supabase-jobben i `bevis-jobber`.** Den er `skipped` på vanlige kodeendringer, og da ville kjøringen aldri blitt
+  bevis. Beviset krever uansett at hele kjøringen er `success`, så en rød pgTAP stopper gjenbruk når den har kjørt.
 - **`if: !cancelled()` er påkrevd.** Uten den blir jobben hoppet over hvis `tre` feiler, og en hoppet jobb ser grønn ut.
 - **Aldri `if:` på selve skip-verdien for en `uses:`-jobb.** Da forsvinner sjekknavnene inni den, og påkrevde sjekker blir stående
   og vente. Send `hopp-over` inn.
