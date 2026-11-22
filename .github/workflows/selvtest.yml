@@ -1,6 +1,10 @@
 name: Selvtest
 on:
   pull_request:
+# FRA-2060: ny push avbryter forrige kjøring på samme PR. Push til main avbrytes aldri.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -16,6 +20,15 @@ jobs:
         with:
           node-version: '24'
       - run: node --test tests/ssrf-drift.test.mjs
+  tree-gronn:
+    name: tree-gronn.yml gjenbruker bare bevist grønt og kjører alt ved tvil
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: bash tests/tree-gronn.test.sh
   csp-sjekk:
     name: csp-sjekk gir riktige advarsler og aldri exit ≠ 0
     runs-on: ubuntu-latest

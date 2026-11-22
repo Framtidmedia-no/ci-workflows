@@ -47,7 +47,11 @@ on:
 jobs:
   velg:
     name: Velg runner
-    runs-on: ubuntu-latest
+    # FRA-2060: med CI_ALDRI_OVERLOP=true er svaret alltid egne runnere, så selve valget kan kjøre der og
+    # koster ingen hostet minuttjobb. Repoer MED overløp må velge fra en hostet runner: er alle egne opptatt,
+    # ville valget ellers stått i den samme køen det skal hjelpe oss ut av. Jobben henter aldri PR-kode.
+    # sentry/* og fork-PR-er blir på GitHub sine engangsrunnere.
+    runs-on: ${{ (vars.CI_ALDRI_OVERLOP == 'true' && contains(vars.CI_RUNS_ON, 'self-hosted') && !startsWith(github.head_ref || github.ref_name, 'sentry/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 3
     outputs:
       etiketter: ${{ steps.velg.outputs.etiketter || inputs.github-etiketter }}

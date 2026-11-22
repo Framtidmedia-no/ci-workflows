@@ -7,7 +7,9 @@ name: Runner-status
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Bare sikkerhetsnett og vakt for timeren på framtid-fs-worker, som holder tallet ferskt (FRA-2060:
+    # målt 22.11.2026, største skrive-gap 91 s over 7 dager).
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 concurrency:

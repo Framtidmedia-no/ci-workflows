@@ -226,20 +226,78 @@ Kjør manuelt fra Actions-fanen. `dry-run` er på som default ved manuell kjøri
 Trenger secret `BRANCH_SWEEP_TOKEN` (PAT med repo-tilgang i alle tre eierne; kilden er Doppler
 `felles/prd` → `GITHUB_BRANCH_SWEEP_TOKEN`). Dette er ikke en reusable workflow — den kjører bare her.
 
-## tree-gronn.yml — hopp over duplikat-push
+## tree-gronn.yml — gjenbruk av grønt resultat (FRA-863, FRA-2060)
 
-Svarer `skip=true` på push når samme tree (identiske filer) allerede var grønt på en `pull_request`-kjøring
-av samme workflow. PR, `workflow_dispatch` og `schedule` hoppes aldri over. Se toppkommentaren i filen.
+Uten inputs: svarer `skip=true` på push når samme tree var grønt på en `pull_request`-kjøring av samme workflow, mot samme
+branch og med basen som forfar til PR-headen. Med `sparing: true` gjelder den også PR, og svarer `hopp-tung` og `hopp-supabase`.
 
-```yaml
-jobs:
-  tre:
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/tree-gronn.yml@main
-    permissions: { contents: read, actions: read }
-  test:
-    needs: tre
-    if: needs.tre.outputs.skip != 'true'
+Rekkefølge med `sparing: true`, og ved all tvil kjøres alt:
+
+1. Endringen rører `.github/`, lockfiler, `package.json`, migrasjoner, Supabase-konfig eller sikkerhetsrelevant konfig: **full CI**.
+2. Bare dokumentasjon (`docs/**/*.md|txt` og `*.md` på rot, ikke `CLAUDE.md`/`AGENTS.md`/`.mdx`): hopp over tunge jobber.
+3. Samme tree-SHA har en fullført **push**-kjøring av samme workflow på en beskyttet branch, der hver jobb i `bevis-jobber`
+   har `success`: hopp over tunge jobber. PR-kjøringer er aldri bevis, og en hoppet jobb er aldri bevis.
+4. Ellers kjører tunge jobber. Supabase hoppes over bare når ingen filer under `supabase/` er endret.
+
+### Ta det i bruk i et konsumentrepo
+
+Forutsetning: `main` og `dev` er beskyttet, og workflowen kjører på `push` til dem (det er push-kjøringen som blir beviset).
+Bruk `<sha>` fra siste commit på `main` her. `bevis-jobber` er de **eksakte** sjekknavnene, slik de står i Checks.
+
+```diff
+ name: CI
+ on:
+   pull_request:
++  push:
++    branches: [main, dev]
++concurrency:
++  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
++  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+ jobs:
++  tre:
++    uses: Framtidmedia-no/ci-workflows/.github/workflows/tree-gronn.yml@<sha>
++    permissions: { contents: read, actions: read }
++    with:
++      sparing: true
++      bevis-jobber: |
++        lint-port / Lint-port (endrede filer + terskel mot base)
++        supabase-test / Supabase pgTAP og lint
++        test
+   lint-port:
++    needs: tre
++    if: ${{ !cancelled() }}
+     uses: Framtidmedia-no/ci-workflows/.github/workflows/lint-gate.yml@<sha>
++    with:
++      hopp-over: ${{ needs.tre.outputs.hopp-tung == 'true' }}
+   supabase-test:
++    needs: tre
++    if: ${{ !cancelled() }}
+     uses: Framtidmedia-no/ci-workflows/.github/workflows/supabase-test.yml@<sha>
++    with:
++      hopp-over: ${{ needs.tre.outputs.hopp-supabase == 'true' }}
+   test:
++    needs: tre
++    if: ${{ !cancelled() && needs.tre.outputs.hopp-tung != 'true' }}
+     runs-on: ubuntu-latest
 ```
+
+Regler som må følges:
+
+- **`if: !cancelled()` er påkrevd.** Uten den blir jobben hoppet over hvis `tre` feiler, og en hoppet jobb ser grønn ut.
+- **Aldri `if:` på selve skip-verdien for en `uses:`-jobb.** Da forsvinner sjekknavnene inni den, og påkrevde sjekker blir stående
+  og vente. Send `hopp-over` inn.
+- **Beholder navnet:** `Lint-port (…)` og `Supabase pgTAP og lint` blir `skipped`, som teller som bestått. Den nøstede `Velg runner`
+  blir også `skipped`, så den skal ikke være en påkrevd sjekk.
+- **Ikke koble til:** `sikkerhet.yml`, `krav-sikkerhet` og CodeQL. De har ingen hopp-input og skal kjøre på hver PR og hver push til `main`.
+- Ikke sett `concurrency` med avbrudd på workflows som deployer eller migrerer.
+
+Verifiser sparingen: `gh run view <id> --json jobs --jq '.jobs[] | [.name,.conclusion] | @tsv'` på en synk-PR skal vise `skipped` på de
+tunge jobbene, og Summary skal vise grunnen fra `tree-gronn`. En PR med endret kode skal vise `success`.
+
+`velg-runner.yml`: med `CI_ALDRI_OVERLOP=true` kjører selve valget på egne runnere og koster ingen hostet minuttjobb. Repoer med overløp
+beholder én hostet jobb, ellers ville valget stått i den samme køen. Når `hopp-over` er på, startes den ikke i det hele tatt.
+
+Selvtest: `bash tests/tree-gronn.test.sh` (falsk `gh`, ingen nettverk) og `selvtest-ci-sparing.yml` (ekte hendelser).
 
 ## codex-review.yml — rådgivende AI-review (Gange-Rolv, GR-1733)
 

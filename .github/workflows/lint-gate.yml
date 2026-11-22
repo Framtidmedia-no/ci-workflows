@@ -62,21 +62,29 @@ on:
         description: Katalog ESLint og typecheck kjører fra (monorepo-app). Install skjer alltid på repo-roten.
         type: string
         default: '.'
+      hopp-over:
+        description: 'FRA-2060: hopp over porten (fra tree-gronn.yml, output hopp-tung). Jobben blir «skipped» og beholder sjekknavnet, og ingen runner-jobb startes.'
+        type: boolean
+        default: false
 
 jobs:
   # FRA-947: egne runnere først, GitHub sine når de er opptatt. Kallende jobb må ha `actions: read`
   # for at valget skal kunne se køen; uten det brukes GitHub sine runnere. Se velg-runner.yml.
   runner:
     name: Velg runner
+    if: ${{ !inputs.hopp-over }}
     uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@0400d07f8b5674180aecef65602832e31a5a677c # main
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
     needs: runner
+    if: ${{ !inputs.hopp-over }}
     runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.etiketter) }}
     timeout-minutes: 20
     env:
       WD: ${{ inputs.working-directory }}
+      # FRA-2060: på push (beviset tree-gronn gjenbruker) måles mot forrige tilstand på branchen.
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -143,12 +151,22 @@ jobs:
             echo "::notice::ESLint er ikke installert i $WD — lint-porten hopper over."
           fi
 
+      # FRA-2060: uten en gyldig base ville begge portene sett «ingen endringer» og blitt grønne, og en slik
+      # kjøring kunne senere blitt brukt som bevis i tree-gronn.yml. Da skal jobben være rød.
+      - name: Base for sammenligning finnes
+        if: steps.eslint.outputs.finnes == 'true'
+        shell: bash
+        run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Fant ikke base-commiten for lint-porten. Kall den bare på pull_request og push til eksisterende branch."
+            exit 1
+          fi
+
       - name: "Port 1: ESLint på endrede filer"
         if: steps.eslint.outputs.finnes == 'true'
         shell: bash
         working-directory: ${{ inputs.working-directory }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MAKS_ADVARSLER: ${{ inputs.maks-advarsler }}
         run: |
           set -o pipefail
@@ -181,7 +199,6 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RUN: ${{ steps.pm.outputs.run }}
           INSTALL: ${{ steps.pm.outputs.install }}
           ESLINT_ARGS: ${{ inputs.eslint-args }}
