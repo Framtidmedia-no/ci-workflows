@@ -291,3 +291,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.log(`::warning title=CSP::csp-sjekk krasjet: ${esc(feil instanceof Error ? feil.message : feil)}`)
   }
 }
+
+// FRA-2060 testendring, merges ikke
