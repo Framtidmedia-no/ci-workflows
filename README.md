@@ -290,6 +290,17 @@ Regler som må følges:
   blir også `skipped`, så den skal ikke være en påkrevd sjekk.
 - **Ikke koble til:** `sikkerhet.yml`, `krav-sikkerhet` og CodeQL. De har ingen hopp-input og skal kjøre på hver PR og hver push til `main`.
 - Ikke sett `concurrency` med avbrudd på workflows som deployer eller migrerer.
+- **Egne jobber som bruker `velg-runner` direkte** skal ha fork-vakt og fallback, ellers blir et feilet valg en hoppet sjekk:
+
+```yaml
+  bygg:
+    needs: runner
+    if: ${{ !cancelled() }}
+    runs-on: ${{ (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(needs.runner.outputs.etiketter || '"ubuntu-latest"') }}
+```
+
+`hopp-over` er en vanlig input. En PR som endrer repoets egen workflow-fil kan derfor sette den, på samme måte som den kan fjerne
+en jobb. Sparingen gjør ikke dette verre, men beskytter heller ikke mot det: vernet er review av `.github/` og `krav-sikkerhet`.
 
 Verifiser sparingen: `gh run view <id> --json jobs --jq '.jobs[] | [.name,.conclusion] | @tsv'` på en synk-PR skal vise `skipped` på de
 tunge jobbene, og Summary skal vise grunnen fra `tree-gronn`. En PR med endret kode skal vise `success`.

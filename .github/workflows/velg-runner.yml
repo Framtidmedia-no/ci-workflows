@@ -51,10 +51,11 @@ jobs:
     # koster ingen hostet minuttjobb. Repoer MED overløp må velge fra en hostet runner: er alle egne opptatt,
     # ville valget ellers stått i den samme køen det skal hjelpe oss ut av. Jobben henter aldri PR-kode.
     # sentry/* og fork-PR-er blir på GitHub sine engangsrunnere.
-    runs-on: ${{ (vars.CI_ALDRI_OVERLOP == 'true' && contains(vars.CI_RUNS_ON, 'self-hosted') && !startsWith(github.head_ref || github.ref_name, 'sentry/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
+    runs-on: ${{ (startsWith(github.head_ref || github.ref_name, 'sentry/') || (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || (vars.CI_ALDRI_OVERLOP == 'true' && contains(vars.CI_RUNS_ON, 'self-hosted')) && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 3
     outputs:
-      etiketter: ${{ steps.velg.outputs.etiketter || inputs.github-etiketter }}
+      # Fork får GitHub sin runner også hvis steget under skulle feile og kalleren har satt egne etiketter.
+      etiketter: ${{ (github.event.pull_request.number && github.event.pull_request.head.repo.full_name != github.repository) && '"ubuntu-latest"' || steps.velg.outputs.etiketter || inputs.github-etiketter }}
     steps:
       - id: velg
         # Jobben skal aldri feile: en feilet jobb hopper over alt som avhenger av den, og hoppet teller som grønt.
@@ -69,9 +70,20 @@ jobs:
           # Repo-variabel CI_ALDRI_OVERLOP=true: aldri send kjøringen til GitHub fordi egne runnere er opptatt. Jobbene står i kø i stedet.
           ALDRI_OVERLOP: ${{ vars.CI_ALDRI_OVERLOP }}
           GREN: ${{ github.head_ref || github.ref_name }}
+          HENDELSE: ${{ github.event_name }}
+          PR_NUMMER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
+          # >>> velg
           valg="$GITHUB_VALG"
           grunn="ingen self-hosted konfigurert"
+          # FRA-2060: fork-kode skal aldri på de persistente runnerne. Gjelder pull_request og pull_request_target,
+          # og et tomt head-repo (slettet fork) regnes som fork.
+          er_fork=false
+          case "$HENDELSE" in
+            pull_request|pull_request_target) [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ] || er_fork=true ;;
+            *) if [ -n "${PR_NUMMER:-}" ] && [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then er_fork=true; fi ;;
+          esac
           # Sentral status (alle repoer): fersk (maks 3 min, se toppen) og alle egne runnere opptatt.
           opptatt_sentralt=0; totalt_sentralt=0; alder_sentralt=999999
           # Bare «tall,tall,tall» godtas, så verdien aldri kan tolkes som kode i aritmetikken under.
@@ -82,7 +94,11 @@ jobs:
           sentralt_fullt() {
             [ "${totalt_sentralt:-0}" -gt 0 ] && [ "${opptatt_sentralt:-0}" -ge "$totalt_sentralt" ] && [ "$alder_sentralt" -le 180 ]
           }
-          if [[ "$GREN" == sentry/* ]]; then
+          if [ "$er_fork" = "true" ]; then
+            # Først i kjeden, så ingen annen gren kan sette $BASE. Også github-etiketter overstyres.
+            valg='"ubuntu-latest"'
+            grunn="PR fra fork: kjøres bare på GitHub sine engangsrunnere"
+          elif [[ "$GREN" == sentry/* ]]; then
             # Agent-brancher (FRA-1976) kjører kode fra Sentry-agenten. Den skal aldri på faste egne runnere,
             # der den kunne lagt igjen noe for neste jobb: alltid GitHub sine engangsrunnere.
             grunn="sentry/*-branch: kode fra Sentry-agenten kjøres bare på GitHub sine engangsrunnere"
@@ -119,3 +135,4 @@ jobs:
           echo "etiketter=$valg" >> "$GITHUB_OUTPUT"
           echo "Runner: $valg ($grunn)"
           echo "**Runner:** \`$valg\` — $grunn" >> "$GITHUB_STEP_SUMMARY"
+          # <<< velg
