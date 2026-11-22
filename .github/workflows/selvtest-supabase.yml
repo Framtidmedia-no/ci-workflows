@@ -13,6 +13,10 @@ on:
       - '.github/workflows/supabase-test.yml'
       - 'sql-guard.json'
       - 'tests/fixtures/**'
+# FRA-2060: ny push avbryter forrige kjøring på samme PR. Push til main avbrytes aldri.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:

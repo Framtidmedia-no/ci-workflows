@@ -39,6 +39,10 @@ on:
         description: Ref i ci-workflows som sql-guard.json hentes fra (selvtesten bruker PR-ens commit)
         type: string
         default: main
+      hopp-over:
+        description: 'FRA-2060: hopp over pgTAP (fra tree-gronn.yml, output hopp-supabase). Jobben blir «skipped» og beholder sjekknavnet. Drift-sjekken kjører alltid.'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -105,6 +109,7 @@ jobs:
 
   pgtap:
     name: Supabase pgTAP og lint
+    if: ${{ !inputs.hopp-over }}
     runs-on: ${{ startsWith(github.head_ref || github.ref_name, 'sentry/') && 'ubuntu-latest' || fromJSON(inputs.runs-on) }}
     timeout-minutes: 20
     defaults:

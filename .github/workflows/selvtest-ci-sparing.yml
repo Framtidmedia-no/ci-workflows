@@ -1,0 +1,51 @@
+# Ende-til-ende-test av CI-sparingen (FRA-2060) mot ekte GitHub-hendelser i dette repoet.
+# Push til main lager beviset. En PR med identisk tree skal hoppe over «Tung jobb», en PR med endret kode
+# skal kjøre den. Samme oppsett som et konsumentrepo, men med lokale workflows.
+name: Selvtest CI-sparing
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  tre:
+    uses: ./.github/workflows/tree-gronn.yml
+    with:
+      sparing: true
+      bevis-jobber: |
+        Tung jobb (selvtest)
+    permissions:
+      contents: read
+      actions: read
+  tung:
+    name: Tung jobb (selvtest)
+    needs: tre
+    if: ${{ !cancelled() && needs.tre.outputs.hopp-tung != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - env:
+          GRUNN: ${{ needs.tre.outputs.grunn }}
+        run: echo "Tung jobb kjørte. Avgjørelse fra tree-gronn - $GRUNN"
+  # Påkrevde sjekker inne i en gjenbrukt workflow må beholde navnet når de hoppes over.
+  lint-hoppet:
+    name: lint-hoppet
+    uses: ./.github/workflows/lint-gate.yml
+    with:
+      hopp-over: true
+    permissions:
+      contents: read
+      actions: read
+  supabase-hoppet:
+    name: supabase-hoppet
+    uses: ./.github/workflows/supabase-test.yml
+    with:
+      hopp-over: true
+      working-directory: tests/fixtures/gronn
+      guard-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
