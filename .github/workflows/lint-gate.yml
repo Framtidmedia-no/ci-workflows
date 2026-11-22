@@ -73,7 +73,7 @@ jobs:
   runner:
     name: Velg runner
     if: ${{ !inputs.hopp-over }}
-    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@285105473956f353192b9887c99706d319c2013b # main
+    uses: Framtidmedia-no/ci-workflows/.github/workflows/velg-runner.yml@88836cb95b448f0164ac4fc7e31f6a4b5676fd39 # main
 
   lint-port:
     name: Lint-port (endrede filer + terskel mot base)
