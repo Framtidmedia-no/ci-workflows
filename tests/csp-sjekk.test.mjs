@@ -168,3 +168,9 @@ test('S3 i alle regioner, CloudFront og R2 er delte verter i script-src', () => 
   assert.ok(m.some((x) => /cloudfront\.net er en delt vert/.test(x)))
   assert.ok(m.some((x) => /r2\.dev er en delt vert/.test(x)))
 })
+
+test('S3 Express (s3express-<sone>) er en delt vert, som i framtid-security src/csp.ts', () => {
+  const tekst = "export const csp = \"script-src 'self' https://b--use1-az4--x-s3.s3express-use1-az4.us-east-1.amazonaws.com; report-uri /r\""
+  const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
+  assert.ok(m.some((x) => /er en delt vert \(s3\.amazonaws\.com\)/.test(x)), m.join('\n'))
+})

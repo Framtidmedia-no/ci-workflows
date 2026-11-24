@@ -26,12 +26,12 @@ export const DELTE_VERTER = [
   'github.io', 'netlify.app', 'pages.dev', 'workers.dev', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
 ]
-/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>), som erS3Vert i src/csp.ts. */
+/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>, s3express-<sone>), som erS3Vert i src/csp.ts. */
 function erS3Vert(vert) {
   // Etikett for etikett (ingen regex med nøstede kvantorer: ReDoS).
   const etiketter = vert.split('.')
   const aws = etiketter.lastIndexOf('amazonaws')
-  return aws > 0 && etiketter.slice(0, aws).some((e) => e === 's3' || e.startsWith('s3-'))
+  return aws > 0 && etiketter.slice(0, aws).some((e) => e === 's3' || e.startsWith('s3-') || e.startsWith('s3express-'))
 }
 /** Delte verter som også gir advarsel i connect-src (kravet i FRA-2030). */
 const DELTE_I_CONNECT = ['supabase.co', 'vercel.app', 'unpkg.com']
