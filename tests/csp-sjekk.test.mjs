@@ -174,3 +174,39 @@ test('S3 Express (s3express-<sone>) er en delt vert, som i framtid-security src/
   const m = analyserFil('src/lib/csp.ts', tekst).funn.map((f) => f.melding)
   assert.ok(m.some((x) => /er en delt vert \(s3\.amazonaws\.com\)/.test(x)), m.join('\n'))
 })
+
+test('S3 gjenkjennes eksakt: dualstack, accelerate, website, api.aws og access points (FRA-2078)', () => {
+  const verter = [
+    'https://s3.dualstack.eu-west-1.amazonaws.com',
+    'https://b.s3-accelerate.dualstack.amazonaws.com',
+    'https://b.s3-website.eu-north-1.amazonaws.com',
+    'https://b.s3-website-eu-west-1.amazonaws.com',
+    'https://s3.us-east-1.api.aws',
+    'https://ap-1.s3-accesspoint.eu-west-1.amazonaws.com',
+    'https://b.s3.cn-north-1.amazonaws.com.cn',
+  ]
+  for (const v of verter) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(m.some((x) => x.includes(`${v} er en delt vert (s3.amazonaws.com)`)), `${v}\n${m.join('\n')}`)
+  }
+})
+
+test('lastbalanserer med s3-navn er elb, ikke S3; lookalikes og andre AWS-tjenester er ikke delte (FRA-2078)', () => {
+  const elb = ['https://s3-website-1234567890.eu-west-1.elb.amazonaws.com', 'https://s3-nlb-0123abcd.elb.eu-west-1.amazonaws.com']
+  for (const v of elb) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(m.some((x) => x.includes(`${v} er en delt vert (elb.amazonaws.com)`)), `${v}\n${m.join('\n')}`)
+    assert.ok(!m.some((x) => /s3\.amazonaws\.com/.test(x)), m.join('\n'))
+  }
+  const ikke = [
+    'https://s3.amazonaws.com.evil.com',
+    'https://s3.amazonaws.example.com',
+    'https://s3-assets.eu-west-1.es.amazonaws.com',
+    'https://s3-logger.execute-api.eu-west-1.amazonaws.com',
+    'https://cognito-idp.eu-west-1.amazonaws.com',
+  ]
+  for (const v of ikke) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(!m.some((x) => /delt vert/.test(x)), `${v}\n${m.join('\n')}`)
+  }
+})

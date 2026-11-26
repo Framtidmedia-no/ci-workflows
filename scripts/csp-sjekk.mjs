@@ -26,12 +26,45 @@ export const DELTE_VERTER = [
   'github.io', 'netlify.app', 'pages.dev', 'workers.dev', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
 ]
-/** S3 i alle regioner og former (s3.<region>, <bucket>.s3.<region>, s3-<region>, s3express-<sone>), som erS3Vert i src/csp.ts. */
+/**
+ * S3 gjenkjent eksakt, som erS3Vert i framtid-security src/csp.ts (FRA-2078): S3-etikettene må stå rett foran
+ * AWS-suffikset (amazonaws.com, amazonaws.com.cn, api.aws). Alt til venstre er bucket-navnet. En s3-…-etikett
+ * lenger ute (kundevalgt lastbalanserernavn s3-website-1.eu-west-1.elb.amazonaws.com) er ikke S3.
+ * Etikett for etikett, uten regex mot hele verten (ReDoS).
+ */
+const AWS_SUFFIKSER = [['amazonaws', 'com', 'cn'], ['amazonaws', 'com'], ['api', 'aws']]
+const AWS_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/
+const S3_FOR_REGION = /^(?:s3|s3-website|s3-fips|s3-accesspoint|s3-accesspoint-fips|s3-object-lambda|s3-outposts|s3-control|s3express-control|s3express-[a-z0-9]+(?:-[a-z0-9]+)*)$/
+const S3_ALENE = /^(?:s3|s3-accelerate|s3-external-1|(?:s3|s3-website|s3-fips)-[a-z]{2}(?:-[a-z]+)+-\d{1,2})$/
+
+function delAws(vert) {
+  const etiketter = vert.toLowerCase().split('.')
+  const s = AWS_SUFFIKSER.find((x) => etiketter.length > x.length && etiketter.slice(-x.length).join('.') === x.join('.'))
+  return s ? { foran: etiketter.slice(0, -s.length), suffiks: s.join('.') } : null
+}
+
 function erS3Vert(vert) {
-  // Etikett for etikett (ingen regex med nøstede kvantorer: ReDoS).
-  const etiketter = vert.split('.')
-  const aws = etiketter.lastIndexOf('amazonaws')
-  return aws > 0 && etiketter.slice(0, aws).some((e) => e === 's3' || e.startsWith('s3-') || e.startsWith('s3express-'))
+  const aws = delAws(vert)
+  if (!aws) return false
+  const f = aws.foran
+  const n = f.length
+  const siste = f[n - 1]
+  if (S3_ALENE.test(siste)) return true
+  if (n >= 2 && siste === 'dualstack' && f[n - 2] === 's3-accelerate') return true
+  if (n >= 2 && AWS_REGION.test(siste)) {
+    if (S3_FOR_REGION.test(f[n - 2])) return true
+    if (n >= 3 && f[n - 2] === 'dualstack' && /^(?:s3|s3-fips|s3-accesspoint|s3-accesspoint-fips|s3-control)$/.test(f[n - 3])) return true
+  }
+  return false
+}
+
+/** Elastic Load Balancing (<navn>-<id>.<region>.elb.amazonaws.com / <navn>-<id>.elb.<region>.amazonaws.com): kundevalgte navn. */
+function erElbVert(vert) {
+  const aws = delAws(vert)
+  if (!aws || aws.suffiks !== 'amazonaws.com') return false
+  const f = aws.foran
+  const n = f.length
+  return f[n - 1] === 'elb' || (n >= 2 && f[n - 2] === 'elb' && AWS_REGION.test(f[n - 1]))
 }
 /** Delte verter som også gir advarsel i connect-src (kravet i FRA-2030). */
 const DELTE_I_CONNECT = ['supabase.co', 'vercel.app', 'unpkg.com']
@@ -152,8 +185,13 @@ export function vert(kilde) {
 }
 
 const deltVert = (v, liste) => {
+  const wildcard = v.startsWith('*.')
   const ren = v.replace(/^\*\./, '')
-  if (liste === DELTE_VERTER && erS3Vert(ren)) return 's3.amazonaws.com'
+  if (liste === DELTE_VERTER) {
+    // En wildcard dekker S3 hvis basen selv er S3, eller hvis s3.<base> er det (*.amazonaws.com, *.<region>.amazonaws.com …).
+    if (erS3Vert(ren) || (wildcard && erS3Vert(`s3.${ren}`))) return 's3.amazonaws.com'
+    if (erElbVert(ren)) return 'elb.amazonaws.com'
+  }
   return liste.find((d) => ren === d || ren.endsWith(`.${d}`)) ?? null
 }
 
