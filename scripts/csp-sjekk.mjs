@@ -25,6 +25,11 @@ export const DELTE_VERTER = [
   'vercel.app', 'vercel.com', 'supabase.co', 'supabase.in', 'unpkg.com', 'cdn.jsdelivr.net', 'raw.githubusercontent.com',
   'github.io', 'netlify.app', 'pages.dev', 'workers.dev', 'storage.googleapis.com', 'firebasestorage.googleapis.com',
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
+  // Kundevalgte eller tildelte navn hos skyleverandørene (FRA-2078).
+  'elasticbeanstalk.com', 'amplifyapp.com', 'awsapprunner.com', 'on.aws', 'awsglobalaccelerator.com', 'azurewebsites.net',
+  'web.core.windows.net', 'azurestaticapps.net', 'azureedge.net', 'azurefd.net', 'trafficmanager.net', 'cloudapp.azure.com',
+  'firebaseapp.com', 'web.app', 'appspot.com', 'run.app', 'cloudfunctions.net', 'herokuapp.com', 'fly.dev', 'onrender.com',
+  'deno.dev', 'gitlab.io',
 ]
 /**
  * S3 som i framtid-security src/csp.ts (FRA-2078). Klassifiseringen gir bare funn (delt vert), så en falsk negativ
@@ -59,16 +64,13 @@ function erS3Vert(vert) {
   return false
 }
 
-/** Elastic Load Balancing (<navn>-<id>.<region>.elb.amazonaws.com / <navn>-<id>.elb.<region>.amazonaws.com): kundevalgte navn. */
-function erElbVert(vert) {
+/** AWS-tjenester med kundevalgte verter under amazonaws-suffiksene (ELB, API Gateway). Fail closed: etiketten hvor som helst. */
+const AWS_KUNDETJENESTER = new Set(['elb', 'execute-api'])
+function awsKundetjeneste(vert) {
   const aws = delAws(vert)
-  if (!aws || aws.suffiks === 'api.aws') return false
-  const f = aws.foran
-  const n = f.length
-  return f[n - 1] === 'elb' || (n >= 2 && f[n - 2] === 'elb' && AWS_REGION.test(f[n - 1]))
+  const tjeneste = aws?.foran.find((e) => AWS_KUNDETJENESTER.has(e))
+  return aws && tjeneste ? `${tjeneste}.${aws.suffiks}` : null
 }
-/** Delte verter som også gir advarsel i connect-src (kravet i FRA-2030). */
-const DELTE_I_CONNECT = ['supabase.co', 'vercel.app', 'unpkg.com']
 
 const HOPP_OVER = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'coverage', '.vercel', '.turbo', 'out'])
 const FASTE_FILER = [
@@ -191,7 +193,8 @@ const deltVert = (v, liste) => {
   if (liste === DELTE_VERTER) {
     // En wildcard dekker S3 hvis basen selv er S3, eller hvis s3.<base> er det (*.amazonaws.com, *.<region>.amazonaws.com …).
     if (erS3Vert(ren) || (wildcard && erS3Vert(`s3.${ren}`))) return 's3.amazonaws.com'
-    if (erElbVert(ren)) return 'elb.amazonaws.com'
+    const tjeneste = awsKundetjeneste(ren)
+    if (tjeneste) return tjeneste
     // Fail closed: ukjent form med S3-lignende etikett under et AWS-suffiks er fortsatt delt.
     if (delAws(ren)?.foran.some((e) => S3_MERKE.test(e))) return 's3.amazonaws.com'
   }
@@ -269,7 +272,8 @@ export function analyserFil(sti, raa) {
         if (d) legg(seg.linje, `${seg.direktiv}: ${k} er en delt vert (${d}) der hvem som helst kan publisere script`)
       }
       if (erConnect) {
-        const d = deltVert(v, DELTE_I_CONNECT)
+        // Samme klassifisering som script-src: wildcard på en delt vert (også S3/ELB/API Gateway) åpner for alle kunder der.
+        const d = deltVert(v, DELTE_VERTER)
         if (d && v.includes('*')) legg(seg.linje, `connect-src: ${k} åpner for alle prosjekter på ${d}; bruk eksakt opprinnelse`)
         else if (d === 'unpkg.com') legg(seg.linje, `connect-src: ${k} er en delt vert (${d})`)
       }
