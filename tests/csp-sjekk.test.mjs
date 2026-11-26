@@ -222,3 +222,33 @@ test('fail closed: amazonaws.eu, s3-global, lange partisjoner og ukjente s3-form
     assert.ok(m.some((x) => x.includes(`${v} er en delt vert (s3.amazonaws.com)`)), `${v}\n${m.join('\n')}`)
   }
 })
+
+test('verter med kundevalgte navn hos skyleverandørene er delte i script-src (FRA-2078)', () => {
+  const verter = [
+    'https://min-app.eu-west-1.elasticbeanstalk.com', 'https://main.d1abc.amplifyapp.com', 'https://abc.eu-west-1.awsapprunner.com',
+    'https://abc.lambda-url.eu-west-1.on.aws', 'https://a1b2.awsglobalaccelerator.com', 'https://abc.execute-api.eu-west-1.amazonaws.com',
+    'https://abc.execute-api.cn-north-1.amazonaws.com.cn', 'https://min-app.azurewebsites.net', 'https://konto.z6.web.core.windows.net',
+    'https://min-app.firebaseapp.com', 'https://min-app.web.app', 'https://min-app.herokuapp.com', 'https://min-app.azurestaticapps.net',
+    'https://min-app.azureedge.net', 'https://x.z01.azurefd.net', 'https://x.trafficmanager.net', 'https://vm.westeurope.cloudapp.azure.com',
+    'https://x.appspot.com', 'https://x-ew.a.run.app', 'https://r-p.cloudfunctions.net', 'https://x.fly.dev', 'https://x.onrender.com',
+    'https://x.deno.dev', 'https://u.gitlab.io', 'https://alb-1.cn-north-1.elb.amazonaws.com.cn',
+  ]
+  for (const v of verter) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(m.some((x) => x.includes(`${v} er en delt vert`)), `${v}\n${m.join('\n')}`)
+  }
+})
+
+test('wildcard på S3 og andre delte verter i connect-src gir advarsel, med samme klassifisering som script-src (FRA-2078)', () => {
+  const verter = [
+    'https://*.s3.eu-west-1.amazonaws.com', 'https://*.amazonaws.com', 'https://*.api.aws', 'https://*.elb.amazonaws.com',
+    'https://*.execute-api.eu-west-1.amazonaws.com', 'https://*.azurewebsites.net', 'https://*.cloudfront.net', 'https://*.on.aws',
+    'https://*.vercel.app', 'https://*.supabase.co',
+  ]
+  for (const v of verter) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self'; connect-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(m.some((x) => x.startsWith(`connect-src: ${v} åpner for alle prosjekter`)), `${v}\n${m.join('\n')}`)
+  }
+  const ok = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self'; connect-src 'self' https://*.compute.amazonaws.com https://*.example.no https://abc.s3.eu-west-1.amazonaws.com; report-uri /r"`).funn.map((f) => f.melding)
+  assert.ok(!ok.some((x) => x.startsWith('connect-src')), ok.join('\n'))
+})
