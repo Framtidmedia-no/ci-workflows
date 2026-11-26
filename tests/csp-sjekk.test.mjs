@@ -201,12 +201,24 @@ test('lastbalanserer med s3-navn er elb, ikke S3; lookalikes og andre AWS-tjenes
   const ikke = [
     'https://s3.amazonaws.com.evil.com',
     'https://s3.amazonaws.example.com',
-    'https://s3-assets.eu-west-1.es.amazonaws.com',
-    'https://s3-logger.execute-api.eu-west-1.amazonaws.com',
     'https://cognito-idp.eu-west-1.amazonaws.com',
   ]
   for (const v of ikke) {
     const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
     assert.ok(!m.some((x) => /delt vert/.test(x)), `${v}\n${m.join('\n')}`)
+  }
+})
+
+test('fail closed: amazonaws.eu, s3-global, lange partisjoner og ukjente s3-former er delte (FRA-2078)', () => {
+  const verter = [
+    'https://b.s3.eusc-de-east-1.amazonaws.eu',
+    'https://a.mrap.accesspoint.s3-global.amazonaws.com',
+    'https://s3.us-isob-east-1.amazonaws.com',
+    'https://s3-assets.eu-west-1.es.amazonaws.com',
+    'https://b.s3-nyform.eu-west-1.amazonaws.com',
+  ]
+  for (const v of verter) {
+    const m = analyserFil('src/lib/csp.ts', `export const csp = "script-src 'self' ${v}; report-uri /r"`).funn.map((f) => f.melding)
+    assert.ok(m.some((x) => x.includes(`${v} er en delt vert (s3.amazonaws.com)`)), `${v}\n${m.join('\n')}`)
   }
 })
