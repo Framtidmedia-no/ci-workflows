@@ -27,15 +27,16 @@ export const DELTE_VERTER = [
   'blob.core.windows.net', 's3.amazonaws.com', 'cloudfront.net', 'r2.dev',
 ]
 /**
- * S3 gjenkjent eksakt, som erS3Vert i framtid-security src/csp.ts (FRA-2078): S3-etikettene må stå rett foran
- * AWS-suffikset (amazonaws.com, amazonaws.com.cn, api.aws). Alt til venstre er bucket-navnet. En s3-…-etikett
- * lenger ute (kundevalgt lastbalanserernavn s3-website-1.eu-west-1.elb.amazonaws.com) er ikke S3.
+ * S3 som i framtid-security src/csp.ts (FRA-2078). Klassifiseringen gir bare funn (delt vert), så en falsk negativ
+ * er hullet: erS3Vert er eksakt (S3-etikettene rett foran AWS-suffikset), men deltVert er fail closed og regner
+ * enhver vert under et AWS-suffiks med en s3/s3-…/s3express-…-etikett som delt. Lastbalanserere (elb) er delte.
  * Etikett for etikett, uten regex mot hele verten (ReDoS).
  */
-const AWS_SUFFIKSER = [['amazonaws', 'com', 'cn'], ['amazonaws', 'com'], ['api', 'aws']]
-const AWS_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/
+const AWS_SUFFIKSER = [['amazonaws', 'com', 'cn'], ['amazonaws', 'com'], ['amazonaws', 'eu'], ['api', 'aws']]
+const AWS_REGION = /^[a-z]{2,}(?:-[a-z]+)+-\d{1,2}$/
+const S3_MERKE = /^s3(?:$|-|express-)/
 const S3_FOR_REGION = /^(?:s3|s3-website|s3-fips|s3-accesspoint|s3-accesspoint-fips|s3-object-lambda|s3-outposts|s3-control|s3express-control|s3express-[a-z0-9]+(?:-[a-z0-9]+)*)$/
-const S3_ALENE = /^(?:s3|s3-accelerate|s3-external-1|(?:s3|s3-website|s3-fips)-[a-z]{2}(?:-[a-z]+)+-\d{1,2})$/
+const S3_ALENE = /^(?:s3|s3-accelerate|s3-external-1|s3-global|(?:s3|s3-website|s3-fips)-[a-z]{2,}(?:-[a-z]+)+-\d{1,2})$/
 
 function delAws(vert) {
   const etiketter = vert.toLowerCase().split('.')
@@ -61,7 +62,7 @@ function erS3Vert(vert) {
 /** Elastic Load Balancing (<navn>-<id>.<region>.elb.amazonaws.com / <navn>-<id>.elb.<region>.amazonaws.com): kundevalgte navn. */
 function erElbVert(vert) {
   const aws = delAws(vert)
-  if (!aws || aws.suffiks !== 'amazonaws.com') return false
+  if (!aws || aws.suffiks === 'api.aws') return false
   const f = aws.foran
   const n = f.length
   return f[n - 1] === 'elb' || (n >= 2 && f[n - 2] === 'elb' && AWS_REGION.test(f[n - 1]))
@@ -191,6 +192,8 @@ const deltVert = (v, liste) => {
     // En wildcard dekker S3 hvis basen selv er S3, eller hvis s3.<base> er det (*.amazonaws.com, *.<region>.amazonaws.com …).
     if (erS3Vert(ren) || (wildcard && erS3Vert(`s3.${ren}`))) return 's3.amazonaws.com'
     if (erElbVert(ren)) return 'elb.amazonaws.com'
+    // Fail closed: ukjent form med S3-lignende etikett under et AWS-suffiks er fortsatt delt.
+    if (delAws(ren)?.foran.some((e) => S3_MERKE.test(e))) return 's3.amazonaws.com'
   }
   return liste.find((d) => ren === d || ren.endsWith(`.${d}`)) ?? null
 }
